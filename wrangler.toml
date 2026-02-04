@@ -6,23 +6,36 @@ compatibility_flags = ["nodejs_compat"]
 [build]
 command = "cargo install -q worker-build && worker-build --release"
 
+# =============================================================================
+# Development environment (default)
+# =============================================================================
 [vars]
 DOMAIN = "https://octo-sts.liam-helmer-428.workers.dev"
 
-# KV namespace for caching installation IDs and trust policies
-# Create with: wrangler kv namespace create OCTO_STS_KV
-# Then update the id below
 [[kv_namespaces]]
 binding = "OCTO_STS_KV"
 id = "c63425e5768f477a80ab468002cfcc82"
 
-# For local development:
-# [[kv_namespaces]]
-# binding = "OCTO_STS_KV"
-# id = "YOUR_KV_NAMESPACE_ID"
-# preview_id = "YOUR_PREVIEW_KV_NAMESPACE_ID"
+# =============================================================================
+# Production environment
+# =============================================================================
+[env.production]
+name = "octo-sts-production"
+workers_dev = true           # Enable workers.dev URL as fallback
 
-# Secrets (set via `wrangler secret put <NAME>`):
+[env.production.vars]
+DOMAIN = "https://sts.epiphytic.org"
+
+[[env.production.kv_namespaces]]
+binding = "OCTO_STS_KV"
+id = "59bc5cdfdb384fec8146b9d284aedf22"
+
+# Custom domain routing (requires DNS: CNAME sts -> octo-sts-production.liam-helmer-428.workers.dev)
+[[env.production.routes]]
+pattern = "sts.epiphytic.org/*"
+zone_name = "epiphytic.org"
+
+# Secrets (set via `wrangler secret put <NAME> --env production`):
 # - GITHUB_APP_ID
 # - GITHUB_APP_PRIVATE_KEY
 # - GITHUB_WEBHOOK_SECRET
