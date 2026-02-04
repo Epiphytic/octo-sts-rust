@@ -1,0 +1,28 @@
+name = "octo-sts"
+main = "build/worker/shim.mjs"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[build]
+command = "cargo install -q worker-build && worker-build --release"
+
+[vars]
+DOMAIN = "octo-sts.example.com"
+
+# KV namespace for caching installation IDs and trust policies
+# Create with: wrangler kv namespace create OCTO_STS_KV
+# Then update the id below
+[[kv_namespaces]]
+binding = "OCTO_STS_KV"
+id = "YOUR_KV_NAMESPACE_ID"
+
+# For local development:
+# [[kv_namespaces]]
+# binding = "OCTO_STS_KV"
+# id = "YOUR_KV_NAMESPACE_ID"
+# preview_id = "YOUR_PREVIEW_KV_NAMESPACE_ID"
+
+# Secrets (set via `wrangler secret put <NAME>`):
+# - GITHUB_APP_ID
+# - GITHUB_APP_PRIVATE_KEY
+# - GITHUB_WEBHOOK_SECRET
