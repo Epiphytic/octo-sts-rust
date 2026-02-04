@@ -45,3 +45,6 @@ override.tf.json
 # Backup files
 *.bak
 *.backup
+
+# Agent fork-join session files (auto-added)
+.fork-join/

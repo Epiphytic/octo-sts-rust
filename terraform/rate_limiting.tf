@@ -1,74 +1,46 @@
-# Rate limiting rules for octo-sts-rust
+# Rate limiting and WAF rules for octo-sts-rust
 # Protects against abuse of the token exchange endpoints
 
 locals {
   sts_hostname = "sts.epiphytic.org"
 }
 
-# Rate limit for token exchange endpoints (stricter)
-# These are the most sensitive endpoints that generate tokens
-resource "cloudflare_rate_limit" "sts_exchange" {
-  zone_id = var.cloudflare_zone_id
+# Rate limiting ruleset using the modern cloudflare_ruleset resource
+# Note: Free plan allows only 1 rate limit rule, so we use a single rule
+# that covers all STS endpoints with the stricter limit
+resource "cloudflare_ruleset" "sts_rate_limiting" {
+  zone_id     = var.cloudflare_zone_id
+  name        = "octo-sts-rate-limiting"
+  description = "Rate limiting rules for octo-sts-rust"
+  kind        = "zone"
+  phase       = "http_ratelimit"
 
-  threshold = var.rate_limit_requests_per_minute_exchange
-  period    = 60
-
-  match {
-    request {
-      url_pattern = "${local.sts_hostname}/sts/exchange*"
-      schemes     = ["HTTPS"]
-      methods     = ["POST"]
+  # Rate limit for all STS endpoints (uses the stricter exchange limit)
+  rules {
+    action = "block"
+    action_parameters {
+      response {
+        status_code  = 429
+        content_type = "application/json"
+        content = jsonencode({
+          error   = "rate_limited"
+          message = "Too many requests. Please try again later."
+        })
+      }
     }
-  }
-
-  action {
-    mode    = "ban"
-    timeout = 60
-    response {
-      content_type = "application/json"
-      body = jsonencode({
-        error   = "rate_limited"
-        message = "Too many requests. Please try again later."
-      })
+    ratelimit {
+      characteristics     = ["cf.colo.id", "ip.src"]
+      period              = 10
+      requests_per_period = 5  # 5 requests per 10 seconds = ~30 req/min
+      mitigation_timeout  = 10 # Free plan requires 10 second timeout
     }
+    expression  = "(http.host eq \"${local.sts_hostname}\")"
+    description = "Rate limit STS endpoints - 5 req/10sec per IP (~30 req/min)"
+    enabled     = true
   }
-
-  disabled    = false
-  description = "Rate limit token exchange endpoints - ${var.rate_limit_requests_per_minute_exchange} req/min"
 }
 
-# Rate limit for all STS endpoints (general protection)
-resource "cloudflare_rate_limit" "sts_general" {
-  zone_id = var.cloudflare_zone_id
-
-  threshold = var.rate_limit_requests_per_minute
-  period    = 60
-
-  match {
-    request {
-      url_pattern = "${local.sts_hostname}/*"
-      schemes     = ["HTTPS"]
-      methods     = ["_ALL_"]
-    }
-  }
-
-  action {
-    mode    = "ban"
-    timeout = 60
-    response {
-      content_type = "application/json"
-      body = jsonencode({
-        error   = "rate_limited"
-        message = "Too many requests. Please try again later."
-      })
-    }
-  }
-
-  disabled    = false
-  description = "General rate limit for STS - ${var.rate_limit_requests_per_minute} req/min"
-}
-
-# WAF custom rule for additional protection against suspicious patterns
+# WAF custom rules for additional protection
 resource "cloudflare_ruleset" "sts_waf" {
   zone_id     = var.cloudflare_zone_id
   name        = "octo-sts-waf"
@@ -76,7 +48,7 @@ resource "cloudflare_ruleset" "sts_waf" {
   kind        = "zone"
   phase       = "http_request_firewall_custom"
 
-  # Block requests with suspicious path traversal attempts
+  # Block requests with path traversal attempts in query params
   rules {
     action      = "block"
     expression  = "(http.host eq \"${local.sts_hostname}\" and http.request.uri.query contains \"..\")"
