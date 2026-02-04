@@ -8,11 +8,11 @@ pub mod types;
 
 pub use check::check_token;
 pub use compile::compile_policy;
-pub use types::{CompiledPolicy, OrgTrustPolicy, PolicyType, TrustPolicy};
+pub use types::{CompiledPolicy, OrgTrustPolicy, TrustPolicy};
 
 use worker::Env;
 
-use crate::config::{KV_BINDING, POLICY_CACHE_TTL_SECS};
+use crate::config::POLICY_CACHE_TTL_SECS;
 use crate::error::{ApiError, Result};
 use crate::github;
 use crate::kv;

@@ -2,7 +2,6 @@
 //!
 //! Fetches content from GitHub repositories.
 
-use serde::Deserialize;
 use worker::{Env, Fetch, Headers, Method, Request, RequestInit};
 
 use crate::config::Config;
@@ -43,7 +42,7 @@ pub async fn get_file_content(
         url = format!("{}?ref={}", url, r);
     }
 
-    let mut headers = Headers::new();
+    let headers = Headers::new();
     headers
         .set("Authorization", &format!("Bearer {}", token))
         .map_err(|_| ApiError::internal("failed to set headers"))?;
@@ -122,7 +121,7 @@ pub async fn create_check_run(
         }
     });
 
-    let mut headers = Headers::new();
+    let headers = Headers::new();
     headers
         .set("Authorization", &format!("Bearer {}", token))
         .map_err(|_| ApiError::internal("failed to set headers"))?;

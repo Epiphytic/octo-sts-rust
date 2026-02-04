@@ -26,7 +26,7 @@ pub async fn fetch_discovery(issuer: &str) -> Result<DiscoveryDocument> {
     // Build discovery URL
     let discovery_url = format!("{}/.well-known/openid-configuration", issuer.trim_end_matches('/'));
 
-    let mut headers = Headers::new();
+    let headers = Headers::new();
     headers
         .set("Accept", "application/json")
         .map_err(|_| ApiError::internal("failed to set headers"))?;

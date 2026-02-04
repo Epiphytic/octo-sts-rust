@@ -2,8 +2,6 @@
 //!
 //! Validates OIDC token claims against compiled trust policies.
 
-use std::collections::HashMap;
-
 use super::types::CompiledPolicy;
 use crate::error::{ApiError, Result};
 use crate::oidc::OidcClaims;
@@ -120,6 +118,8 @@ fn check_custom_claims(claims: &OidcClaims, policy: &CompiledPolicy) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use regex::Regex;
+    use std::collections::HashMap;
 
     fn make_claims(iss: &str, sub: &str, aud: Vec<&str>) -> OidcClaims {
         OidcClaims {
@@ -132,14 +132,28 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_check_issuer_exact() {
-        let claims = make_claims("https://example.com", "sub", vec!["aud"]);
-        let mut policy = CompiledPolicy {
+    fn make_claims_with_custom(
+        iss: &str,
+        sub: &str,
+        aud: Vec<&str>,
+        custom: HashMap<String, serde_json::Value>,
+    ) -> OidcClaims {
+        OidcClaims {
+            iss: iss.to_string(),
+            sub: sub.to_string(),
+            aud: aud.into_iter().map(String::from).collect(),
+            exp: 0,
+            iat: 0,
+            custom_claims: custom,
+        }
+    }
+
+    fn make_policy() -> CompiledPolicy {
+        CompiledPolicy {
             issuer: Some("https://example.com".to_string()),
             issuer_regex: None,
             issuer_pattern: None,
-            subject: Some("sub".to_string()),
+            subject: Some("test-subject".to_string()),
             subject_regex: None,
             subject_pattern: None,
             audience: None,
@@ -149,11 +163,249 @@ mod tests {
             claim_patterns: HashMap::new(),
             permissions: HashMap::new(),
             repositories: vec![],
-        };
+        }
+    }
+
+    #[test]
+    fn test_check_issuer_exact() {
+        let claims = make_claims("https://example.com", "sub", vec!["aud"]);
+        let mut policy = make_policy();
 
         assert!(check_issuer(&claims, &policy).is_ok());
 
         policy.issuer = Some("https://other.com".to_string());
         assert!(check_issuer(&claims, &policy).is_err());
+    }
+
+    #[test]
+    fn test_check_issuer_pattern() {
+        let claims = make_claims("https://sub.example.com", "sub", vec!["aud"]);
+        let mut policy = make_policy();
+        policy.issuer = None;
+        policy.issuer_regex = Some(Regex::new("^https://.*\\.example\\.com$").unwrap());
+
+        assert!(check_issuer(&claims, &policy).is_ok());
+
+        // Non-matching issuer
+        let claims_bad = make_claims("https://other.com", "sub", vec!["aud"]);
+        assert!(check_issuer(&claims_bad, &policy).is_err());
+    }
+
+    #[test]
+    fn test_check_subject_exact() {
+        let claims = make_claims("https://example.com", "test-subject", vec!["aud"]);
+        let policy = make_policy();
+
+        assert!(check_subject(&claims, &policy).is_ok());
+
+        let claims_bad = make_claims("https://example.com", "wrong-subject", vec!["aud"]);
+        assert!(check_subject(&claims_bad, &policy).is_err());
+    }
+
+    #[test]
+    fn test_check_subject_pattern() {
+        let claims = make_claims(
+            "https://example.com",
+            "repo:myorg/myrepo:ref:refs/heads/main",
+            vec!["aud"],
+        );
+        let mut policy = make_policy();
+        policy.subject = None;
+        policy.subject_regex = Some(Regex::new("^repo:myorg/myrepo:.*$").unwrap());
+
+        assert!(check_subject(&claims, &policy).is_ok());
+
+        // Non-matching subject
+        let claims_bad = make_claims(
+            "https://example.com",
+            "repo:other/repo:ref:main",
+            vec!["aud"],
+        );
+        assert!(check_subject(&claims_bad, &policy).is_err());
+    }
+
+    #[test]
+    fn test_check_audience_exact() {
+        let claims = make_claims("https://example.com", "sub", vec!["my-audience"]);
+        let mut policy = make_policy();
+        policy.audience = Some("my-audience".to_string());
+
+        assert!(check_audience(&claims, &policy, "default.com").is_ok());
+
+        // Wrong audience
+        let claims_bad = make_claims("https://example.com", "sub", vec!["wrong-audience"]);
+        assert!(check_audience(&claims_bad, &policy, "default.com").is_err());
+    }
+
+    #[test]
+    fn test_check_audience_defaults_to_domain() {
+        let claims = make_claims("https://example.com", "sub", vec!["my-domain.com"]);
+        let policy = make_policy(); // No audience set
+
+        assert!(check_audience(&claims, &policy, "my-domain.com").is_ok());
+
+        // Wrong audience when expecting domain
+        let claims_bad = make_claims("https://example.com", "sub", vec!["wrong-domain.com"]);
+        assert!(check_audience(&claims_bad, &policy, "my-domain.com").is_err());
+    }
+
+    #[test]
+    fn test_check_audience_pattern() {
+        let claims = make_claims(
+            "https://example.com",
+            "sub",
+            vec!["https://my-app.example.com"],
+        );
+        let mut policy = make_policy();
+        policy.audience_regex = Some(Regex::new("^https://.*\\.example\\.com$").unwrap());
+
+        assert!(check_audience(&claims, &policy, "default.com").is_ok());
+
+        // Non-matching audience pattern
+        let claims_bad = make_claims(
+            "https://example.com",
+            "sub",
+            vec!["https://my-app.other.com"],
+        );
+        assert!(check_audience(&claims_bad, &policy, "default.com").is_err());
+    }
+
+    #[test]
+    fn test_check_audience_multiple() {
+        let claims = make_claims(
+            "https://example.com",
+            "sub",
+            vec!["other-aud", "my-audience", "third"],
+        );
+        let mut policy = make_policy();
+        policy.audience = Some("my-audience".to_string());
+
+        // Should match because "my-audience" is in the list
+        assert!(check_audience(&claims, &policy, "default.com").is_ok());
+    }
+
+    #[test]
+    fn test_check_custom_claims_string() {
+        let custom = [(
+            "job_workflow_ref".to_string(),
+            serde_json::json!("myorg/workflows/.github/workflows/deploy.yaml@main"),
+        )]
+        .into_iter()
+        .collect();
+        let claims = make_claims_with_custom("https://example.com", "sub", vec!["aud"], custom);
+
+        let mut policy = make_policy();
+        policy.claim_regexes.insert(
+            "job_workflow_ref".to_string(),
+            Regex::new("^myorg/workflows/.*@main$").unwrap(),
+        );
+
+        assert!(check_custom_claims(&claims, &policy).is_ok());
+    }
+
+    #[test]
+    fn test_check_custom_claims_boolean() {
+        let custom = [("is_verified".to_string(), serde_json::json!(true))]
+            .into_iter()
+            .collect();
+        let claims = make_claims_with_custom("https://example.com", "sub", vec!["aud"], custom);
+
+        let mut policy = make_policy();
+        policy
+            .claim_regexes
+            .insert("is_verified".to_string(), Regex::new("^true$").unwrap());
+
+        assert!(check_custom_claims(&claims, &policy).is_ok());
+
+        // Test false
+        let custom_false = [("is_verified".to_string(), serde_json::json!(false))]
+            .into_iter()
+            .collect();
+        let claims_false =
+            make_claims_with_custom("https://example.com", "sub", vec!["aud"], custom_false);
+        assert!(check_custom_claims(&claims_false, &policy).is_err());
+    }
+
+    #[test]
+    fn test_check_custom_claims_missing() {
+        let claims = make_claims("https://example.com", "sub", vec!["aud"]);
+        let mut policy = make_policy();
+        policy
+            .claim_regexes
+            .insert("required_claim".to_string(), Regex::new("^.*$").unwrap());
+
+        let result = check_custom_claims(&claims, &policy);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("missing required claim"));
+    }
+
+    #[test]
+    fn test_check_custom_claims_mismatch() {
+        let custom = [("environment".to_string(), serde_json::json!("staging"))]
+            .into_iter()
+            .collect();
+        let claims = make_claims_with_custom("https://example.com", "sub", vec!["aud"], custom);
+
+        let mut policy = make_policy();
+        policy.claim_regexes.insert(
+            "environment".to_string(),
+            Regex::new("^production$").unwrap(),
+        );
+
+        let result = check_custom_claims(&claims, &policy);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("does not match pattern"));
+    }
+
+    #[test]
+    fn test_check_token_full_match() {
+        let claims = make_claims("https://example.com", "test-subject", vec!["my-domain.com"]);
+        let policy = make_policy();
+
+        assert!(check_token(&claims, &policy, "my-domain.com").is_ok());
+    }
+
+    #[test]
+    fn test_check_token_fails_on_issuer() {
+        let claims = make_claims("https://wrong.com", "test-subject", vec!["my-domain.com"]);
+        let policy = make_policy();
+
+        let result = check_token(&claims, &policy, "my-domain.com");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("issuer"));
+    }
+
+    #[test]
+    fn test_check_token_fails_on_subject() {
+        let claims = make_claims(
+            "https://example.com",
+            "wrong-subject",
+            vec!["my-domain.com"],
+        );
+        let policy = make_policy();
+
+        let result = check_token(&claims, &policy, "my-domain.com");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("subject"));
+    }
+
+    #[test]
+    fn test_check_token_fails_on_audience() {
+        let claims = make_claims(
+            "https://example.com",
+            "test-subject",
+            vec!["wrong-domain.com"],
+        );
+        let policy = make_policy();
+
+        let result = check_token(&claims, &policy, "my-domain.com");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("audience"));
     }
 }

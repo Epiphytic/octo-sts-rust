@@ -2,7 +2,7 @@
 //!
 //! Validates OIDC tokens by verifying signatures and checking claims.
 
-use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
+use surrealdb_jsonwebtoken::{decode, decode_header, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use worker::Env;

@@ -14,7 +14,7 @@ DOMAIN = "octo-sts.example.com"
 # Then update the id below
 [[kv_namespaces]]
 binding = "OCTO_STS_KV"
-id = "YOUR_KV_NAMESPACE_ID"
+id = "c63425e5768f477a80ab468002cfcc82"
 
 # For local development:
 # [[kv_namespaces]]

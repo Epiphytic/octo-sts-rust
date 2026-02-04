@@ -36,7 +36,7 @@ fn extract_bearer_token(req: &Request) -> Result<String> {
 
 /// Revoke a GitHub installation token
 async fn revoke_token(token: &str) -> Result<()> {
-    let mut headers = Headers::new();
+    let headers = Headers::new();
     headers
         .set("Authorization", &format!("Bearer {}", token))
         .map_err(|_| ApiError::internal("failed to set headers"))?;

@@ -127,6 +127,7 @@ fn anchor_pattern(pattern: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::policy::types::OrgTrustPolicy;
 
     #[test]
     fn test_anchor_pattern() {
@@ -134,5 +135,227 @@ mod tests {
         assert_eq!(anchor_pattern("^foo"), "^foo$");
         assert_eq!(anchor_pattern("foo$"), "^foo$");
         assert_eq!(anchor_pattern("^foo$"), "^foo$");
+    }
+
+    #[test]
+    fn test_compile_policy_with_exact_issuer_and_subject() {
+        let policy = TrustPolicy {
+            issuer: Some("https://example.com".to_string()),
+            issuer_pattern: None,
+            subject: Some("test-subject".to_string()),
+            subject_pattern: None,
+            audience: Some("my-audience".to_string()),
+            audience_pattern: None,
+            claim_patterns: HashMap::new(),
+            permissions: [("contents".to_string(), "read".to_string())]
+                .into_iter()
+                .collect(),
+        };
+
+        let compiled = compile_policy(PolicyType::Repo(policy)).expect("Should compile");
+
+        assert_eq!(compiled.issuer, Some("https://example.com".to_string()));
+        assert!(compiled.issuer_regex.is_none());
+        assert_eq!(compiled.subject, Some("test-subject".to_string()));
+        assert!(compiled.subject_regex.is_none());
+        assert_eq!(compiled.audience, Some("my-audience".to_string()));
+        assert!(compiled.audience_regex.is_none());
+        assert_eq!(
+            compiled.permissions.get("contents"),
+            Some(&"read".to_string())
+        );
+    }
+
+    #[test]
+    fn test_compile_policy_with_patterns() {
+        let policy = TrustPolicy {
+            issuer: None,
+            issuer_pattern: Some("https://.*\\.example\\.com".to_string()),
+            subject: None,
+            subject_pattern: Some("repo:myorg/.*".to_string()),
+            audience: None,
+            audience_pattern: Some("https://.*".to_string()),
+            claim_patterns: [("job_workflow_ref".to_string(), "myorg/.*".to_string())]
+                .into_iter()
+                .collect(),
+            permissions: HashMap::new(),
+        };
+
+        let compiled = compile_policy(PolicyType::Repo(policy)).expect("Should compile");
+
+        assert!(compiled.issuer.is_none());
+        assert!(compiled.issuer_regex.is_some());
+        assert!(compiled.subject.is_none());
+        assert!(compiled.subject_regex.is_some());
+        assert!(compiled.audience.is_none());
+        assert!(compiled.audience_regex.is_some());
+        assert_eq!(compiled.claim_regexes.len(), 1);
+
+        // Verify patterns are anchored
+        let issuer_regex = compiled.issuer_regex.as_ref().unwrap();
+        assert!(issuer_regex.is_match("https://sub.example.com"));
+        assert!(!issuer_regex.is_match("https://sub.example.com/extra"));
+    }
+
+    #[test]
+    fn test_compile_policy_fails_without_issuer() {
+        let policy = TrustPolicy {
+            issuer: None,
+            issuer_pattern: None, // Neither set
+            subject: Some("test".to_string()),
+            subject_pattern: None,
+            audience: None,
+            audience_pattern: None,
+            claim_patterns: HashMap::new(),
+            permissions: HashMap::new(),
+        };
+
+        let result = compile_policy(PolicyType::Repo(policy));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("issuer"));
+    }
+
+    #[test]
+    fn test_compile_policy_fails_without_subject() {
+        let policy = TrustPolicy {
+            issuer: Some("https://example.com".to_string()),
+            issuer_pattern: None,
+            subject: None,
+            subject_pattern: None, // Neither set
+            audience: None,
+            audience_pattern: None,
+            claim_patterns: HashMap::new(),
+            permissions: HashMap::new(),
+        };
+
+        let result = compile_policy(PolicyType::Repo(policy));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("subject"));
+    }
+
+    #[test]
+    fn test_compile_policy_fails_with_both_issuer_and_pattern() {
+        let policy = TrustPolicy {
+            issuer: Some("https://example.com".to_string()),
+            issuer_pattern: Some(".*".to_string()), // Both set
+            subject: Some("test".to_string()),
+            subject_pattern: None,
+            audience: None,
+            audience_pattern: None,
+            claim_patterns: HashMap::new(),
+            permissions: HashMap::new(),
+        };
+
+        let result = compile_policy(PolicyType::Repo(policy));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_compile_policy_fails_with_both_audience_and_pattern() {
+        let policy = TrustPolicy {
+            issuer: Some("https://example.com".to_string()),
+            issuer_pattern: None,
+            subject: Some("test".to_string()),
+            subject_pattern: None,
+            audience: Some("aud".to_string()),
+            audience_pattern: Some(".*".to_string()), // Both set
+            claim_patterns: HashMap::new(),
+            permissions: HashMap::new(),
+        };
+
+        let result = compile_policy(PolicyType::Repo(policy));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_compile_policy_fails_with_invalid_regex() {
+        let policy = TrustPolicy {
+            issuer: None,
+            issuer_pattern: Some("[invalid".to_string()), // Invalid regex
+            subject: Some("test".to_string()),
+            subject_pattern: None,
+            audience: None,
+            audience_pattern: None,
+            claim_patterns: HashMap::new(),
+            permissions: HashMap::new(),
+        };
+
+        let result = compile_policy(PolicyType::Repo(policy));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_compile_org_policy_with_repositories() {
+        let org_policy = OrgTrustPolicy {
+            base: TrustPolicy {
+                issuer: Some("https://accounts.google.com".to_string()),
+                issuer_pattern: None,
+                subject: None,
+                subject_pattern: Some("^\\d+$".to_string()),
+                audience: None,
+                audience_pattern: None,
+                claim_patterns: HashMap::new(),
+                permissions: [("contents".to_string(), "read".to_string())]
+                    .into_iter()
+                    .collect(),
+            },
+            repositories: vec!["repo-a".to_string(), "repo-b".to_string()],
+        };
+
+        let compiled = compile_policy(PolicyType::Org(org_policy)).expect("Should compile");
+
+        assert_eq!(compiled.repositories.len(), 2);
+        assert!(compiled.repositories.contains(&"repo-a".to_string()));
+        assert!(compiled.repositories.contains(&"repo-b".to_string()));
+    }
+
+    #[test]
+    fn test_compile_policy_with_claim_patterns() {
+        let policy = TrustPolicy {
+            issuer: Some("https://example.com".to_string()),
+            issuer_pattern: None,
+            subject: Some("test".to_string()),
+            subject_pattern: None,
+            audience: None,
+            audience_pattern: None,
+            claim_patterns: [
+                ("job_workflow_ref".to_string(), "myorg/.*@main".to_string()),
+                ("environment".to_string(), "production".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+            permissions: HashMap::new(),
+        };
+
+        let compiled = compile_policy(PolicyType::Repo(policy)).expect("Should compile");
+
+        assert_eq!(compiled.claim_regexes.len(), 2);
+
+        let job_ref_regex = compiled.claim_regexes.get("job_workflow_ref").unwrap();
+        assert!(job_ref_regex.is_match("myorg/workflows@main"));
+        assert!(!job_ref_regex.is_match("myorg/workflows@develop"));
+
+        let env_regex = compiled.claim_regexes.get("environment").unwrap();
+        assert!(env_regex.is_match("production"));
+        assert!(!env_regex.is_match("staging"));
+    }
+
+    #[test]
+    fn test_compile_policy_audience_is_optional() {
+        let policy = TrustPolicy {
+            issuer: Some("https://example.com".to_string()),
+            issuer_pattern: None,
+            subject: Some("test".to_string()),
+            subject_pattern: None,
+            audience: None,         // Not set
+            audience_pattern: None, // Not set
+            claim_patterns: HashMap::new(),
+            permissions: HashMap::new(),
+        };
+
+        // Should succeed - audience is optional
+        let compiled = compile_policy(PolicyType::Repo(policy)).expect("Should compile");
+        assert!(compiled.audience.is_none());
+        assert!(compiled.audience_regex.is_none());
     }
 }

@@ -2,7 +2,7 @@
 //!
 //! Exchanges OIDC tokens for GitHub installation tokens.
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use worker::{Env, Request, Url};
 
 use crate::config::Config;
@@ -112,8 +112,83 @@ fn extract_bearer_token(req: &Request) -> Result<String> {
 
 /// Calculate expires_in from ISO 8601 expires_at timestamp
 fn calculate_expires_in(expires_at: &str) -> Option<u64> {
-    // Parse ISO 8601 timestamp and calculate seconds until expiry
-    // For now, return None and let the caller use a default
-    // TODO: Implement proper ISO 8601 parsing
-    None
+    // Get current time
+    let now_ms = js_sys::Date::now();
+    let now_secs = (now_ms / 1000.0) as i64;
+    calculate_expires_in_from_now(expires_at, now_secs)
+}
+
+/// Calculate expires_in from ISO 8601 expires_at timestamp given a specific "now" time
+/// This is testable without js_sys
+fn calculate_expires_in_from_now(expires_at: &str, now_secs: i64) -> Option<u64> {
+    // Parse ISO 8601 timestamp (e.g., "2024-02-03T12:00:00Z")
+    // GitHub always returns UTC timestamps
+    use chrono::{DateTime, Utc};
+
+    let expires_dt: DateTime<Utc> = expires_at.parse().ok()?;
+    let expires_secs = expires_dt.timestamp();
+
+    // Calculate difference
+    let diff = expires_secs - now_secs;
+
+    // Only return positive values (token not expired)
+    if diff > 0 {
+        Some(diff as u64)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_calculate_expires_in_valid_timestamp() {
+        // expires_at is 3600 seconds (1 hour) in the future
+        let now = 1706900000i64; // Fixed timestamp
+        let expires_at = "2024-02-02T19:53:20Z"; // exactly 3600 seconds after now
+
+        let result = calculate_expires_in_from_now(expires_at, now);
+        assert_eq!(result, Some(3600));
+    }
+
+    #[test]
+    fn test_calculate_expires_in_expired_token() {
+        // expires_at is in the past
+        let now = 1706900000i64;
+        let expires_at = "2024-02-02T17:53:20Z"; // 2 hours before now
+
+        let result = calculate_expires_in_from_now(expires_at, now);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_calculate_expires_in_invalid_timestamp() {
+        let now = 1706900000i64;
+        let expires_at = "invalid-timestamp";
+
+        let result = calculate_expires_in_from_now(expires_at, now);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_calculate_expires_in_with_milliseconds() {
+        // GitHub sometimes returns timestamps with milliseconds
+        let now = 1706900000i64;
+        let expires_at = "2024-02-02T19:53:20.123Z";
+
+        let result = calculate_expires_in_from_now(expires_at, now);
+        assert_eq!(result, Some(3600));
+    }
+
+    #[test]
+    fn test_calculate_expires_in_realistic_github_response() {
+        // Test with a realistic GitHub response format
+        let now = 1706900000i64; // 2024-02-02T18:53:20Z
+        let expires_at = "2024-02-02T19:53:20Z"; // 1 hour later
+
+        let result = calculate_expires_in_from_now(expires_at, now);
+        assert_eq!(result, Some(3600));
+    }
 }

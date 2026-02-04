@@ -11,15 +11,15 @@ crate-type = ["cdylib"]
 
 [dependencies]
 # Cloudflare Workers
-worker = "0.3"
+worker = "0.7"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 
-# JWT handling
-jsonwebtoken = "9"
+# JWT handling - using WASM-compatible fork
+surrealdb-jsonwebtoken = "8.3.0-surreal.1"
 
 # Utilities
 regex = "1"
@@ -27,6 +27,7 @@ thiserror = "1"
 base64 = "0.22"
 url = "2"
 hex = "0.4"
+chrono = "0.4"
 
 # Crypto (for webhook signature verification)
 hmac = "0.12"

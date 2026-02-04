@@ -2,15 +2,14 @@
 //!
 //! Fetches and caches JWKS for OIDC token validation.
 
-use jsonwebtoken::jwk::JwkSet;
-use serde::Deserialize;
+use surrealdb_jsonwebtoken::jwk::JwkSet;
 use worker::{Fetch, Headers, Method, Request, RequestInit};
 
 use crate::error::{ApiError, Result};
 
 /// Fetch JWKS from a URI
 pub async fn fetch_jwks(jwks_uri: &str) -> Result<JwkSet> {
-    let mut headers = Headers::new();
+    let headers = Headers::new();
     headers
         .set("Accept", "application/json")
         .map_err(|_| ApiError::internal("failed to set headers"))?;
