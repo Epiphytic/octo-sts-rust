@@ -4,4 +4,7 @@
 
 mod cache;
 
-pub use cache::{cache_policy, get_cached_policy, get_or_fetch_installation};
+pub use cache::{
+    cache_pat_policy, cache_policy, get_cached_pat_policy, get_cached_policy,
+    get_or_fetch_installation,
+};

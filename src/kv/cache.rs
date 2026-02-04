@@ -10,6 +10,7 @@ use crate::config::{Config, INSTALL_CACHE_TTL_SECS, KV_BINDING};
 use crate::error::{ApiError, Result};
 use crate::github::auth;
 use crate::policy::CompiledPolicy;
+use crate::sts::exchange_pat::PatTrustPolicy;
 
 /// Cached installation ID
 #[derive(Serialize, Deserialize)]
@@ -94,4 +95,34 @@ pub async fn cache_policy(cache_key: &str, policy: &CompiledPolicy, ttl_secs: u6
 /// Get current Unix timestamp
 fn current_timestamp() -> u64 {
     (js_sys::Date::now() / 1000.0) as u64
+}
+
+/// Get cached PAT trust policy
+pub async fn get_cached_pat_policy(cache_key: &str, env: &Env) -> Result<Option<PatTrustPolicy>> {
+    let kv = get_kv(env)?;
+
+    match kv.get(cache_key).json::<PatTrustPolicy>().await {
+        Ok(policy) => Ok(policy),
+        Err(e) => {
+            worker::console_log!("Failed to read cached PAT policy: {}", e);
+            Ok(None)
+        }
+    }
+}
+
+/// Cache a PAT trust policy
+pub async fn cache_pat_policy(cache_key: &str, policy: &PatTrustPolicy, ttl_secs: u64, env: &Env) -> Result<()> {
+    let kv = get_kv(env)?;
+
+    let value = serde_json::to_string(policy)
+        .map_err(|e| ApiError::internal(format!("failed to serialize PAT policy: {}", e)))?;
+
+    kv.put(cache_key, value)
+        .map_err(|e| ApiError::internal(format!("failed to create KV put: {}", e)))?
+        .expiration_ttl(ttl_secs)
+        .execute()
+        .await
+        .map_err(|e| ApiError::internal(format!("failed to cache PAT policy: {}", e)))?;
+
+    Ok(())
 }

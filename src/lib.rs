@@ -19,6 +19,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     router
         .get("/", |_, _| handle_health())
         .post_async("/sts/exchange", handle_exchange)
+        .post_async("/sts/exchange/pat", handle_exchange_pat)
         .post_async("/sts/revoke", handle_revoke)
         .post_async("/webhook", handle_webhook)
         .run(req, env)
@@ -33,9 +34,17 @@ fn handle_health() -> Result<Response> {
     }))
 }
 
-/// Token exchange endpoint
+/// Token exchange endpoint (OIDC)
 async fn handle_exchange(req: Request, ctx: RouteContext<()>) -> Result<Response> {
     match sts::exchange::handle(req, &ctx.env).await {
+        Ok(response) => Response::from_json(&response),
+        Err(e) => e.into_response(),
+    }
+}
+
+/// Token exchange endpoint (PAT)
+async fn handle_exchange_pat(req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    match sts::exchange_pat::handle(req, &ctx.env).await {
         Ok(response) => Response::from_json(&response),
         Err(e) => e.into_response(),
     }
