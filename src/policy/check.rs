@@ -8,6 +8,16 @@ use crate::oidc::OidcClaims;
 
 /// Check if OIDC token claims match the trust policy
 pub fn check_token(claims: &OidcClaims, policy: &CompiledPolicy, domain: &str) -> Result<()> {
+    check_token_with_repo(claims, policy, domain, None)
+}
+
+/// Check if OIDC token claims match the trust policy, with optional repository validation
+pub fn check_token_with_repo(
+    claims: &OidcClaims,
+    policy: &CompiledPolicy,
+    domain: &str,
+    target_repo: Option<&str>,
+) -> Result<()> {
     // Check issuer
     check_issuer(claims, policy)?;
 
@@ -19,6 +29,33 @@ pub fn check_token(claims: &OidcClaims, policy: &CompiledPolicy, domain: &str) -
 
     // Check custom claims
     check_custom_claims(claims, policy)?;
+
+    // Check repository access (for org policies with repository restrictions)
+    if let Some(repo) = target_repo {
+        check_repository_access(policy, repo)?;
+    }
+
+    Ok(())
+}
+
+fn check_repository_access(policy: &CompiledPolicy, target_repo: &str) -> Result<()> {
+    // If repositories list is empty, all repos are allowed
+    if policy.repositories.is_empty() {
+        return Ok(());
+    }
+
+    // Check if the target repo is in the allowed list (case-insensitive)
+    let is_allowed = policy
+        .repositories
+        .iter()
+        .any(|r| r.eq_ignore_ascii_case(target_repo));
+
+    if !is_allowed {
+        return Err(ApiError::permission_denied(format!(
+            "repository '{}' is not allowed by this policy",
+            target_repo
+        )));
+    }
 
     Ok(())
 }
@@ -128,6 +165,7 @@ mod tests {
             aud: aud.into_iter().map(String::from).collect(),
             exp: 0,
             iat: 0,
+            nbf: None,
             custom_claims: HashMap::new(),
         }
     }
@@ -144,6 +182,7 @@ mod tests {
             aud: aud.into_iter().map(String::from).collect(),
             exp: 0,
             iat: 0,
+            nbf: None,
             custom_claims: custom,
         }
     }
@@ -407,5 +446,51 @@ mod tests {
         let result = check_token(&claims, &policy, "my-domain.com");
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("audience"));
+    }
+
+    #[test]
+    fn test_check_repository_access_empty_list_allows_all() {
+        let policy = make_policy(); // Empty repositories list
+
+        assert!(check_repository_access(&policy, "any-repo").is_ok());
+        assert!(check_repository_access(&policy, ".github").is_ok());
+    }
+
+    #[test]
+    fn test_check_repository_access_allowed() {
+        let mut policy = make_policy();
+        policy.repositories = vec!["repo-a".to_string(), "repo-b".to_string()];
+
+        assert!(check_repository_access(&policy, "repo-a").is_ok());
+        assert!(check_repository_access(&policy, "repo-b").is_ok());
+        // Case-insensitive
+        assert!(check_repository_access(&policy, "REPO-A").is_ok());
+    }
+
+    #[test]
+    fn test_check_repository_access_denied() {
+        let mut policy = make_policy();
+        policy.repositories = vec!["repo-a".to_string()];
+
+        let result = check_repository_access(&policy, "repo-c");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not allowed"));
+    }
+
+    #[test]
+    fn test_check_token_with_repo_validates_repository() {
+        let claims = make_claims("https://example.com", "test-subject", vec!["my-domain.com"]);
+        let mut policy = make_policy();
+        policy.repositories = vec!["allowed-repo".to_string()];
+
+        // Should pass with allowed repo
+        assert!(
+            check_token_with_repo(&claims, &policy, "my-domain.com", Some("allowed-repo")).is_ok()
+        );
+
+        // Should fail with disallowed repo
+        let result = check_token_with_repo(&claims, &policy, "my-domain.com", Some("other-repo"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not allowed"));
     }
 }

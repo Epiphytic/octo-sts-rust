@@ -30,6 +30,10 @@ pub struct OidcClaims {
     /// Issued at
     pub iat: u64,
 
+    /// Not before (optional)
+    #[serde(default)]
+    pub nbf: Option<u64>,
+
     /// Additional claims
     #[serde(flatten)]
     pub custom_claims: HashMap<String, serde_json::Value>,
@@ -126,10 +130,39 @@ pub async fn validate_token(token: &str, _env: &Env) -> Result<OidcClaims> {
     let token_data = decode::<OidcClaims>(token, &decoding_key, &validation)
         .map_err(|e| ApiError::token_verification_failed(format!("token verification failed: {}", e)))?;
 
-    // Manually validate expiration using js_sys::Date (WASM-compatible)
+    // Manually validate time-based claims using js_sys::Date (WASM-compatible)
     let now_secs = (js_sys::Date::now() / 1000.0) as u64;
+
+    // Validate expiration (exp)
     if token_data.claims.exp <= now_secs {
         return Err(ApiError::invalid_token("token has expired"));
+    }
+
+    // Validate not-before (nbf) if present
+    if let Some(nbf) = token_data.claims.nbf {
+        // Allow 60 seconds of clock skew
+        if nbf > now_secs + 60 {
+            return Err(ApiError::invalid_token("token is not yet valid (nbf claim)"));
+        }
+    }
+
+    // Validate issued-at (iat) - sanity checks
+    let iat = token_data.claims.iat;
+
+    // Token should not be issued more than 60 seconds in the future (clock skew)
+    if iat > now_secs + 60 {
+        return Err(ApiError::invalid_token("token issued in the future (iat claim)"));
+    }
+
+    // Token should not be older than 24 hours (reasonable limit for OIDC tokens)
+    let max_age_secs = 24 * 60 * 60; // 24 hours
+    if iat + max_age_secs < now_secs {
+        return Err(ApiError::invalid_token("token is too old (iat claim)"));
+    }
+
+    // Ensure iat is before exp (sanity check)
+    if iat >= token_data.claims.exp {
+        return Err(ApiError::invalid_token("invalid token: iat >= exp"));
     }
 
     Ok(token_data.claims)

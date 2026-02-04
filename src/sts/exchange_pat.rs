@@ -67,13 +67,23 @@ pub async fn handle(req: Request, env: &Env) -> Result<ExchangeResponse> {
     // 5. Check org membership
     check_org_membership(&pat, &policy.required_org, &user.login).await?;
 
-    // 6. Get installation ID for the org
-    let owner = params.scope.split('/').next().ok_or_else(|| {
-        ApiError::invalid_request("scope must be in format owner/repo or owner/.github")
-    })?;
+    // 6. Validate repository access
+    let parts: Vec<&str> = params.scope.split('/').collect();
+    if parts.len() != 2 {
+        return Err(ApiError::invalid_request(
+            "scope must be in format owner/repo or owner/.github",
+        ));
+    }
+    let owner = parts[0];
+    let requested_repo = parts[1];
+
+    // Check if the repository is allowed by the policy
+    check_repository_access(&policy, requested_repo)?;
+
+    // 7. Get installation ID for the org
     let installation_id = kv::get_or_fetch_installation(owner, env, &config).await?;
 
-    // 7. Generate GitHub installation token with policy permissions
+    // 8. Generate GitHub installation token with policy permissions
     let (token, expires_at) = auth::create_installation_token(
         installation_id,
         &params.scope,
@@ -177,6 +187,29 @@ async fn validate_pat_and_get_user(pat: &str) -> Result<GitHubUser> {
     }
 }
 
+/// Check if the requested repository is allowed by the policy
+fn check_repository_access(policy: &PatTrustPolicy, requested_repo: &str) -> Result<()> {
+    // If repositories list is empty, all repos are allowed
+    if policy.repositories.is_empty() {
+        return Ok(());
+    }
+
+    // Check if the requested repo is in the allowed list (case-insensitive)
+    let is_allowed = policy
+        .repositories
+        .iter()
+        .any(|r| r.eq_ignore_ascii_case(requested_repo));
+
+    if !is_allowed {
+        return Err(ApiError::permission_denied(format!(
+            "repository '{}' is not allowed by this policy",
+            requested_repo
+        )));
+    }
+
+    Ok(())
+}
+
 /// Check if user is a member of the required org
 async fn check_org_membership(pat: &str, required_org: &str, username: &str) -> Result<()> {
     let headers = Headers::new();
@@ -234,6 +267,9 @@ async fn check_org_membership(pat: &str, required_org: &str, username: &str) -> 
 
 /// Load PAT trust policy from the org's .github repo
 async fn load_pat_policy(scope: &str, identity: &str, env: &Env) -> Result<PatTrustPolicy> {
+    // Validate identity to prevent path traversal
+    crate::policy::validate_identity(identity)?;
+
     let parts: Vec<&str> = scope.split('/').collect();
     if parts.len() != 2 {
         return Err(ApiError::invalid_request("scope must be in format owner/repo"));
@@ -308,5 +344,45 @@ permissions:
         let policy: PatTrustPolicy = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(policy.required_org, "Epiphytic");
         assert!(policy.repositories.is_empty());
+    }
+
+    #[test]
+    fn test_check_repository_access_empty_list_allows_all() {
+        let policy = PatTrustPolicy {
+            required_org: "test".to_string(),
+            permissions: HashMap::new(),
+            repositories: vec![],
+        };
+
+        // Empty list allows any repo
+        assert!(check_repository_access(&policy, "any-repo").is_ok());
+        assert!(check_repository_access(&policy, ".github").is_ok());
+    }
+
+    #[test]
+    fn test_check_repository_access_allowed() {
+        let policy = PatTrustPolicy {
+            required_org: "test".to_string(),
+            permissions: HashMap::new(),
+            repositories: vec!["repo-a".to_string(), "repo-b".to_string()],
+        };
+
+        assert!(check_repository_access(&policy, "repo-a").is_ok());
+        assert!(check_repository_access(&policy, "repo-b").is_ok());
+        // Case-insensitive
+        assert!(check_repository_access(&policy, "REPO-A").is_ok());
+    }
+
+    #[test]
+    fn test_check_repository_access_denied() {
+        let policy = PatTrustPolicy {
+            required_org: "test".to_string(),
+            permissions: HashMap::new(),
+            repositories: vec!["repo-a".to_string()],
+        };
+
+        let result = check_repository_access(&policy, "repo-c");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not allowed"));
     }
 }

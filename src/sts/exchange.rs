@@ -34,16 +34,21 @@ pub async fn handle(req: Request, env: &Env) -> Result<ExchangeResponse> {
     // 3. Load trust policy (with caching)
     let policy = policy::load(&params.scope, &params.identity, env).await?;
 
-    // 4. Check token against policy
-    policy::check_token(&claims, &policy, &config.domain)?;
+    // 4. Extract target repo from scope for repository validation
+    let parts: Vec<&str> = params.scope.split('/').collect();
+    if parts.len() != 2 {
+        return Err(ApiError::invalid_request("scope must be in format owner/repo"));
+    }
+    let owner = parts[0];
+    let target_repo = parts[1];
 
-    // 5. Get installation ID (with caching)
-    let owner = params.scope.split('/').next().ok_or_else(|| {
-        ApiError::invalid_request("scope must be in format owner/repo")
-    })?;
+    // 5. Check token against policy (including repository restrictions)
+    policy::check_token_with_repo(&claims, &policy, &config.domain, Some(target_repo))?;
+
+    // 6. Get installation ID (with caching)
     let installation_id = kv::get_or_fetch_installation(owner, env, &config).await?;
 
-    // 6. Generate GitHub installation token
+    // 7. Generate GitHub installation token
     let (token, expires_at) = github::auth::create_installation_token(
         installation_id,
         &params.scope,

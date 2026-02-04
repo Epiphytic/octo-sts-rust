@@ -8,6 +8,12 @@ use std::collections::HashMap;
 use super::types::{CompiledPolicy, PolicyType, TrustPolicy};
 use crate::error::{ApiError, Result};
 
+/// Maximum allowed length for regex patterns (to prevent abuse)
+const MAX_PATTERN_LENGTH: usize = 256;
+
+/// Maximum number of custom claim patterns allowed
+const MAX_CLAIM_PATTERNS: usize = 10;
+
 /// Compile a trust policy into a validated, ready-to-match form
 pub fn compile_policy(policy: PolicyType) -> Result<CompiledPolicy> {
     match policy {
@@ -38,6 +44,25 @@ fn compile_trust_policy(policy: TrustPolicy, repositories: Vec<String>) -> Resul
         ));
     }
 
+    // Validate pattern lengths to prevent abuse
+    if let Some(ref p) = policy.issuer_pattern {
+        validate_pattern_length(p, "issuer_pattern")?;
+    }
+    if let Some(ref p) = policy.subject_pattern {
+        validate_pattern_length(p, "subject_pattern")?;
+    }
+    if let Some(ref p) = policy.audience_pattern {
+        validate_pattern_length(p, "audience_pattern")?;
+    }
+
+    // Validate number of claim patterns
+    if policy.claim_patterns.len() > MAX_CLAIM_PATTERNS {
+        return Err(ApiError::invalid_request(format!(
+            "too many claim patterns (max {})",
+            MAX_CLAIM_PATTERNS
+        )));
+    }
+
     // Compile patterns with anchoring
     let issuer_regex = policy
         .issuer_pattern
@@ -61,6 +86,7 @@ fn compile_trust_policy(policy: TrustPolicy, repositories: Vec<String>) -> Resul
     let mut claim_regexes = HashMap::new();
     let mut claim_patterns = HashMap::new();
     for (key, pattern) in policy.claim_patterns {
+        validate_pattern_length(&pattern, &format!("claim pattern '{}'", key))?;
         let anchored = anchor_pattern(&pattern);
         let regex = Regex::new(&anchored).map_err(|e| {
             ApiError::invalid_request(format!("invalid regex for claim '{}': {}", key, e))
@@ -103,6 +129,17 @@ fn validate_exactly_one(
         ))),
         _ => Ok(()),
     }
+}
+
+/// Validate pattern length to prevent ReDoS and abuse
+fn validate_pattern_length(pattern: &str, field: &str) -> Result<()> {
+    if pattern.len() > MAX_PATTERN_LENGTH {
+        return Err(ApiError::invalid_request(format!(
+            "{} is too long (max {} characters)",
+            field, MAX_PATTERN_LENGTH
+        )));
+    }
+    Ok(())
 }
 
 /// Compile a pattern with automatic anchoring
@@ -357,5 +394,59 @@ mod tests {
         let compiled = compile_policy(PolicyType::Repo(policy)).expect("Should compile");
         assert!(compiled.audience.is_none());
         assert!(compiled.audience_regex.is_none());
+    }
+
+    #[test]
+    fn test_compile_policy_rejects_overly_long_pattern() {
+        let long_pattern = "a".repeat(300); // Exceeds MAX_PATTERN_LENGTH
+        let policy = TrustPolicy {
+            issuer: None,
+            issuer_pattern: Some(long_pattern),
+            subject: Some("test".to_string()),
+            subject_pattern: None,
+            audience: None,
+            audience_pattern: None,
+            claim_patterns: HashMap::new(),
+            permissions: HashMap::new(),
+        };
+
+        let result = compile_policy(PolicyType::Repo(policy));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("too long"));
+    }
+
+    #[test]
+    fn test_compile_policy_rejects_too_many_claim_patterns() {
+        let mut claim_patterns = HashMap::new();
+        for i in 0..15 {
+            // More than MAX_CLAIM_PATTERNS
+            claim_patterns.insert(format!("claim_{}", i), "value".to_string());
+        }
+
+        let policy = TrustPolicy {
+            issuer: Some("https://example.com".to_string()),
+            issuer_pattern: None,
+            subject: Some("test".to_string()),
+            subject_pattern: None,
+            audience: None,
+            audience_pattern: None,
+            claim_patterns,
+            permissions: HashMap::new(),
+        };
+
+        let result = compile_policy(PolicyType::Repo(policy));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("too many"));
+    }
+
+    #[test]
+    fn test_validate_pattern_length() {
+        // Valid pattern
+        assert!(validate_pattern_length("^test$", "test").is_ok());
+
+        // Too long
+        let long_pattern = "a".repeat(300);
+        let result = validate_pattern_length(&long_pattern, "test");
+        assert!(result.is_err());
     }
 }
