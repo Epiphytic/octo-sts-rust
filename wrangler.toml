@@ -7,7 +7,7 @@ compatibility_flags = ["nodejs_compat"]
 command = "cargo install -q worker-build && worker-build --release"
 
 [vars]
-DOMAIN = "octo-sts.example.com"
+DOMAIN = "https://octo-sts.liam-helmer-428.workers.dev"
 
 # KV namespace for caching installation IDs and trust policies
 # Create with: wrangler kv namespace create OCTO_STS_KV

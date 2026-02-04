@@ -113,16 +113,24 @@ pub async fn validate_token(token: &str, _env: &Env) -> Result<OidcClaims> {
         .map_err(|e| ApiError::token_verification_failed(format!("invalid JWK: {}", e)))?;
 
     // Set up validation
+    // Note: We disable automatic exp validation because the JWT library uses std::time
+    // which is not available in WASM. We validate expiration manually below.
     let mut validation = Validation::new(header.alg);
-    validation.validate_exp = true;
+    validation.validate_exp = false;
     validation.validate_nbf = false;
-    // Don't validate audience here - we do it in policy check
-    validation.set_audience::<&str>(&[]);
+    // Don't set audience - leaving aud as None skips audience validation
+    // We validate audience in policy check instead
     validation.set_issuer(&[&claims_preview.iss]);
 
-    // Decode and verify
+    // Decode and verify signature
     let token_data = decode::<OidcClaims>(token, &decoding_key, &validation)
         .map_err(|e| ApiError::token_verification_failed(format!("token verification failed: {}", e)))?;
+
+    // Manually validate expiration using js_sys::Date (WASM-compatible)
+    let now_secs = (js_sys::Date::now() / 1000.0) as u64;
+    if token_data.claims.exp <= now_secs {
+        return Err(ApiError::invalid_token("token has expired"));
+    }
 
     Ok(token_data.claims)
 }
