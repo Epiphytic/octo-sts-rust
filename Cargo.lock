@@ -881,13 +881,16 @@ dependencies = [
  "chrono",
  "hex",
  "hmac",
+ "rand 0.8.5",
  "regex",
+ "rsa",
  "serde",
  "serde_json",
  "serde_yaml",
  "sha2",
  "surrealdb-jsonwebtoken",
  "thiserror 1.0.69",
+ "tokio",
  "url",
 ]
 
@@ -896,6 +899,7 @@ name = "octo-sts-gcp"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -904,6 +908,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "url",
 ]

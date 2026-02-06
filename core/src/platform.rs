@@ -53,6 +53,16 @@ pub trait Environment {
     fn get_secret(&self, name: &str) -> Result<String>;
 }
 
+/// JWT signer for GitHub App authentication
+///
+/// Abstracts how App JWTs are signed. Implementations:
+/// - `PemJwtSigner` (core): signs locally using a PEM private key
+/// - `KmsJwtSigner` (gcp): delegates signing to GCP Cloud KMS
+#[async_trait(?Send)]
+pub trait JwtSigner {
+    async fn sign_app_jwt(&self, now_secs: i64) -> Result<String>;
+}
+
 /// Typed cache get: deserialize from bytes
 pub async fn cache_get<T: DeserializeOwned>(cache: &dyn Cache, key: &str) -> Result<Option<T>> {
     match cache.get_bytes(key).await? {

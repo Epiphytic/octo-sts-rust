@@ -2,12 +2,12 @@
 //!
 //! Generates App JWTs and requests installation tokens.
 
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::config::Config;
 use crate::error::{ApiError, Result};
-use crate::platform::{Clock, HttpClient};
+use crate::platform::{Clock, HttpClient, JwtSigner};
 
 const GITHUB_API_BASE: &str = "https://api.github.com";
 
@@ -26,26 +26,60 @@ struct InstallationTokenResponse {
     expires_at: String,
 }
 
+/// JWT signer that uses a local PEM private key
+pub struct PemJwtSigner {
+    pub app_id: String,
+    pub pem_key: String,
+}
+
+#[async_trait(?Send)]
+impl JwtSigner for PemJwtSigner {
+    async fn sign_app_jwt(&self, now_secs: i64) -> Result<String> {
+        use surrealdb_jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+
+        let iat = now_secs - 60;
+        let exp = now_secs + 600;
+
+        let claims = AppJwtClaims {
+            iat,
+            exp,
+            iss: self.app_id.clone(),
+        };
+
+        let key = EncodingKey::from_rsa_pem(self.pem_key.as_bytes())
+            .map_err(|e| ApiError::internal(format!("invalid private key: {}", e)))?;
+
+        let header = Header::new(Algorithm::RS256);
+
+        encode(&header, &claims, &key)
+            .map_err(|e| ApiError::internal(format!("failed to encode JWT: {}", e)))
+    }
+}
+
 /// Create a GitHub installation token with scoped permissions
+///
+/// If `repositories` is non-empty, the token is restricted to those repos.
+/// If empty, the token has access to all repos the installation can access.
 pub async fn create_installation_token(
     installation_id: u64,
-    scope: &str,
+    repositories: &[String],
     permissions: &HashMap<String, String>,
-    config: &Config,
+    signer: &dyn JwtSigner,
     http: &dyn HttpClient,
     clock: &dyn Clock,
 ) -> Result<(String, String)> {
-    let app_jwt = generate_app_jwt(config, clock)?;
+    let app_jwt = signer.sign_app_jwt(clock.now_secs() as i64).await?;
 
-    let repo = scope
-        .split('/')
-        .nth(1)
-        .ok_or_else(|| ApiError::invalid_request("invalid scope format"))?;
-
-    let body = serde_json::json!({
-        "repositories": [repo],
-        "permissions": permissions
-    });
+    let body = if repositories.is_empty() {
+        serde_json::json!({
+            "permissions": permissions
+        })
+    } else {
+        serde_json::json!({
+            "repositories": repositories,
+            "permissions": permissions
+        })
+    };
 
     let url = format!(
         "{}/app/installations/{}/access_tokens",
@@ -81,41 +115,14 @@ pub async fn create_installation_token(
     Ok((token_response.token, token_response.expires_at))
 }
 
-/// Generate a GitHub App JWT for API authentication
-fn generate_app_jwt(config: &Config, clock: &dyn Clock) -> Result<String> {
-    generate_app_jwt_with_timestamp(config, clock.now_secs() as i64)
-}
-
-/// Generate a GitHub App JWT with a specific timestamp (for testing)
-fn generate_app_jwt_with_timestamp(config: &Config, now: i64) -> Result<String> {
-    use surrealdb_jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-
-    let iat = now - 60;
-    let exp = now + 600;
-
-    let claims = AppJwtClaims {
-        iat,
-        exp,
-        iss: config.github_app_id.clone(),
-    };
-
-    let key = EncodingKey::from_rsa_pem(config.github_app_private_key.as_bytes())
-        .map_err(|e| ApiError::internal(format!("invalid private key: {}", e)))?;
-
-    let header = Header::new(Algorithm::RS256);
-
-    encode(&header, &claims, &key)
-        .map_err(|e| ApiError::internal(format!("failed to encode JWT: {}", e)))
-}
-
 /// Get installation ID for an owner
 pub async fn get_installation_id(
     owner: &str,
-    config: &Config,
+    signer: &dyn JwtSigner,
     http: &dyn HttpClient,
     clock: &dyn Clock,
 ) -> Result<u64> {
-    let app_jwt = generate_app_jwt(config, clock)?;
+    let app_jwt = signer.sign_app_jwt(clock.now_secs() as i64).await?;
 
     let url = format!("{}/orgs/{}/installation", GITHUB_API_BASE, owner);
     let auth_header = format!("Bearer {}", app_jwt);
@@ -199,19 +206,19 @@ pJz3IwKBgEbqya7GswZmYXsyXP1HZlMZk+emjUSjZukNTQkksut6fnEHt/6BIMpm
 
     const TEST_TIMESTAMP: i64 = 1706900000;
 
-    fn make_test_config() -> Config {
-        Config {
-            domain: "test.example.com".to_string(),
-            github_app_id: "12345".to_string(),
-            github_app_private_key: TEST_PRIVATE_KEY.to_string(),
-            github_webhook_secret: "test-secret".to_string(),
+    fn make_test_signer() -> PemJwtSigner {
+        PemJwtSigner {
+            app_id: "12345".to_string(),
+            pem_key: TEST_PRIVATE_KEY.to_string(),
         }
     }
 
-    #[test]
-    fn test_generate_app_jwt_produces_valid_jwt() {
-        let config = make_test_config();
-        let jwt = generate_app_jwt_with_timestamp(&config, TEST_TIMESTAMP)
+    #[tokio::test]
+    async fn test_generate_app_jwt_produces_valid_jwt() {
+        let signer = make_test_signer();
+        let jwt = signer
+            .sign_app_jwt(TEST_TIMESTAMP)
+            .await
             .expect("JWT generation should succeed");
 
         let parts: Vec<&str> = jwt.split('.').collect();
@@ -222,12 +229,14 @@ pJz3IwKBgEbqya7GswZmYXsyXP1HZlMZk+emjUSjZukNTQkksut6fnEHt/6BIMpm
         assert!(!parts[2].is_empty(), "Signature should not be empty");
     }
 
-    #[test]
-    fn test_generate_app_jwt_has_correct_header() {
+    #[tokio::test]
+    async fn test_generate_app_jwt_has_correct_header() {
         use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 
-        let config = make_test_config();
-        let jwt = generate_app_jwt_with_timestamp(&config, TEST_TIMESTAMP)
+        let signer = make_test_signer();
+        let jwt = signer
+            .sign_app_jwt(TEST_TIMESTAMP)
+            .await
             .expect("JWT generation should succeed");
 
         let parts: Vec<&str> = jwt.split('.').collect();
@@ -239,12 +248,14 @@ pJz3IwKBgEbqya7GswZmYXsyXP1HZlMZk+emjUSjZukNTQkksut6fnEHt/6BIMpm
         assert_eq!(header["typ"], "JWT", "Type should be JWT");
     }
 
-    #[test]
-    fn test_generate_app_jwt_has_correct_claims() {
+    #[tokio::test]
+    async fn test_generate_app_jwt_has_correct_claims() {
         use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 
-        let config = make_test_config();
-        let jwt = generate_app_jwt_with_timestamp(&config, TEST_TIMESTAMP)
+        let signer = make_test_signer();
+        let jwt = signer
+            .sign_app_jwt(TEST_TIMESTAMP)
+            .await
             .expect("JWT generation should succeed");
 
         let parts: Vec<&str> = jwt.split('.').collect();
@@ -263,25 +274,25 @@ pJz3IwKBgEbqya7GswZmYXsyXP1HZlMZk+emjUSjZukNTQkksut6fnEHt/6BIMpm
         assert_eq!(exp - iat, 660, "exp - iat should be 660 seconds");
     }
 
-    #[test]
-    fn test_generate_app_jwt_with_invalid_key_fails() {
-        let config = Config {
-            domain: "test.example.com".to_string(),
-            github_app_id: "12345".to_string(),
-            github_app_private_key: "invalid-key".to_string(),
-            github_webhook_secret: "test-secret".to_string(),
+    #[tokio::test]
+    async fn test_generate_app_jwt_with_invalid_key_fails() {
+        let signer = PemJwtSigner {
+            app_id: "12345".to_string(),
+            pem_key: "invalid-key".to_string(),
         };
 
-        let result = generate_app_jwt_with_timestamp(&config, TEST_TIMESTAMP);
+        let result = signer.sign_app_jwt(TEST_TIMESTAMP).await;
         assert!(result.is_err(), "Should fail with invalid key");
     }
 
-    #[test]
-    fn test_generate_app_jwt_can_be_decoded() {
+    #[tokio::test]
+    async fn test_generate_app_jwt_can_be_decoded() {
         use surrealdb_jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 
-        let config = make_test_config();
-        let jwt = generate_app_jwt_with_timestamp(&config, TEST_TIMESTAMP)
+        let signer = make_test_signer();
+        let jwt = signer
+            .sign_app_jwt(TEST_TIMESTAMP)
+            .await
             .expect("JWT generation should succeed");
 
         let mut validation = Validation::new(Algorithm::RS256);
@@ -297,5 +308,102 @@ pJz3IwKBgEbqya7GswZmYXsyXP1HZlMZk+emjUSjZukNTQkksut6fnEHt/6BIMpm
         assert_eq!(decoded.claims.iss, "12345");
         assert_eq!(decoded.claims.iat, TEST_TIMESTAMP - 60);
         assert_eq!(decoded.claims.exp, TEST_TIMESTAMP + 600);
+    }
+
+    /// Generate a fresh RSA key pair at runtime (never touches disk)
+    fn generate_rsa_keypair() -> (String, String) {
+        use rand::rngs::OsRng;
+        use rsa::pkcs1::{EncodeRsaPrivateKey, EncodeRsaPublicKey, LineEnding};
+        use rsa::RsaPrivateKey;
+
+        let private_key = RsaPrivateKey::new(&mut OsRng, 2048).expect("key generation failed");
+        let private_pem = private_key
+            .to_pkcs1_pem(LineEnding::LF)
+            .expect("private key PEM export failed")
+            .to_string();
+        let public_pem = private_key
+            .to_public_key()
+            .to_pkcs1_pem(LineEnding::LF)
+            .expect("public key PEM export failed");
+        (private_pem, public_pem)
+    }
+
+    #[tokio::test]
+    async fn test_generated_key_signs_valid_jwt() {
+        let (private_pem, _public_pem) = generate_rsa_keypair();
+
+        let signer = PemJwtSigner {
+            app_id: "99999".to_string(),
+            pem_key: private_pem,
+        };
+
+        let jwt = signer
+            .sign_app_jwt(TEST_TIMESTAMP)
+            .await
+            .expect("signing with generated key should succeed");
+
+        let parts: Vec<&str> = jwt.split('.').collect();
+        assert_eq!(parts.len(), 3, "JWT should have 3 parts");
+    }
+
+    #[tokio::test]
+    async fn test_generated_key_jwt_verifies_with_public_key() {
+        use surrealdb_jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
+
+        let (private_pem, public_pem) = generate_rsa_keypair();
+
+        let signer = PemJwtSigner {
+            app_id: "42".to_string(),
+            pem_key: private_pem,
+        };
+
+        let jwt = signer
+            .sign_app_jwt(TEST_TIMESTAMP)
+            .await
+            .expect("signing should succeed");
+
+        // Verify with the matching public key (full cryptographic verification)
+        let decoding_key = DecodingKey::from_rsa_pem(public_pem.as_bytes())
+            .expect("public key should be valid");
+
+        let mut validation = Validation::new(Algorithm::RS256);
+        validation.validate_exp = false;
+        validation.set_required_spec_claims::<&str>(&[]);
+
+        let decoded = decode::<AppJwtClaims>(&jwt, &decoding_key, &validation)
+            .expect("JWT signature should verify with matching public key");
+
+        assert_eq!(decoded.claims.iss, "42");
+        assert_eq!(decoded.claims.iat, TEST_TIMESTAMP - 60);
+        assert_eq!(decoded.claims.exp, TEST_TIMESTAMP + 600);
+    }
+
+    #[tokio::test]
+    async fn test_generated_key_jwt_fails_with_wrong_public_key() {
+        use surrealdb_jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
+
+        let (private_pem, _) = generate_rsa_keypair();
+        let (_, wrong_public_pem) = generate_rsa_keypair();
+
+        let signer = PemJwtSigner {
+            app_id: "42".to_string(),
+            pem_key: private_pem,
+        };
+
+        let jwt = signer
+            .sign_app_jwt(TEST_TIMESTAMP)
+            .await
+            .expect("signing should succeed");
+
+        // Verification with a different key pair should fail
+        let wrong_key = DecodingKey::from_rsa_pem(wrong_public_pem.as_bytes())
+            .expect("public key should be valid");
+
+        let mut validation = Validation::new(Algorithm::RS256);
+        validation.validate_exp = false;
+        validation.set_required_spec_claims::<&str>(&[]);
+
+        let result = decode::<AppJwtClaims>(&jwt, &wrong_key, &validation);
+        assert!(result.is_err(), "JWT should NOT verify with wrong public key");
     }
 }

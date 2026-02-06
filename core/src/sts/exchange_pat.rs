@@ -5,10 +5,10 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::config::{Config, INSTALL_CACHE_TTL_SECS};
+use crate::config::INSTALL_CACHE_TTL_SECS;
 use crate::error::{ApiError, Result};
 use crate::github::auth;
-use crate::platform::{cache_get, cache_put, Cache, Clock, Environment, HttpClient};
+use crate::platform::{cache_get, cache_put, Cache, Clock, HttpClient, JwtSigner};
 
 /// PAT exchange response
 #[derive(Serialize)]
@@ -58,16 +58,14 @@ pub async fn handle(
     request: PatExchangeRequest,
     cache: &dyn Cache,
     http: &dyn HttpClient,
-    env: &dyn Environment,
     clock: &dyn Clock,
+    signer: &dyn JwtSigner,
 ) -> Result<ExchangeResponse> {
-    let config = Config::from_env(env)?;
-
     // 1. Validate PAT and get user info
     let user = validate_pat_and_get_user(&request.bearer_token, http).await?;
 
     // 2. Load PAT trust policy
-    let policy = load_pat_policy(&request.scope, &request.identity, cache, http, env).await?;
+    let policy = load_pat_policy(&request.scope, &request.identity, cache, http, signer, clock).await?;
 
     // 3. Check org membership
     check_org_membership(&request.bearer_token, &policy.required_org, &user.login, http).await?;
@@ -85,14 +83,20 @@ pub async fn handle(
     check_repository_access(&policy, requested_repo)?;
 
     // 5. Get installation ID for the org
-    let installation_id = get_or_fetch_installation(owner, cache, http, &config, clock).await?;
+    let installation_id = get_or_fetch_installation(owner, cache, http, signer, clock).await?;
 
     // 6. Generate GitHub installation token with policy permissions
+    let token_repos = if policy.repositories.is_empty() {
+        vec![requested_repo.to_string()]
+    } else {
+        policy.repositories.clone()
+    };
+
     let (token, expires_at) = auth::create_installation_token(
         installation_id,
-        &request.scope,
+        &token_repos,
         &policy.permissions,
-        &config,
+        signer,
         http,
         clock,
     )
@@ -112,7 +116,7 @@ async fn get_or_fetch_installation(
     owner: &str,
     cache: &dyn Cache,
     http: &dyn HttpClient,
-    config: &Config,
+    signer: &dyn JwtSigner,
     clock: &dyn Clock,
 ) -> Result<u64> {
     let cache_key = format!("install:{}", owner);
@@ -121,7 +125,7 @@ async fn get_or_fetch_installation(
         return Ok(id);
     }
 
-    let installation_id = auth::get_installation_id(owner, config, http, clock).await?;
+    let installation_id = auth::get_installation_id(owner, signer, http, clock).await?;
 
     let _ = cache_put(cache, &cache_key, &installation_id, INSTALL_CACHE_TTL_SECS).await;
 
@@ -231,7 +235,8 @@ async fn load_pat_policy(
     identity: &str,
     cache: &dyn Cache,
     http: &dyn HttpClient,
-    env: &dyn Environment,
+    signer: &dyn JwtSigner,
+    clock: &dyn Clock,
 ) -> Result<PatTrustPolicy> {
     crate::policy::validate_identity(identity)?;
 
@@ -250,7 +255,7 @@ async fn load_pat_policy(
 
     // Fetch from GitHub (from org's .github repo)
     let path = format!(".github/chainguard/{}.pat.yaml", identity);
-    let yaml_content = crate::github::api::get_file_content(owner, ".github", &path, None, http, env).await?;
+    let yaml_content = crate::github::api::get_file_content(owner, ".github", &path, None, http, signer, clock).await?;
 
     let policy: PatTrustPolicy = serde_yaml::from_str(&yaml_content)
         .map_err(|e| ApiError::invalid_request(format!("invalid PAT policy YAML: {}", e)))?;

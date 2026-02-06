@@ -7,7 +7,7 @@ use serde::Deserialize;
 use crate::config::Config;
 use crate::error::{ApiError, Result};
 use crate::github::api;
-use crate::platform::{Environment, HttpClient};
+use crate::platform::{Clock, Environment, HttpClient, JwtSigner};
 use crate::policy;
 
 const POLICY_PATH_PREFIX: &str = ".github/chainguard/";
@@ -20,6 +20,8 @@ pub async fn handle(
     event_type: &str,
     http: &dyn HttpClient,
     env: &dyn Environment,
+    signer: &dyn JwtSigner,
+    clock: &dyn Clock,
 ) -> Result<()> {
     let config = Config::from_env(env)?;
 
@@ -28,7 +30,7 @@ pub async fn handle(
 
     // Process based on event type
     match event_type {
-        "push" => handle_push_event(body, http, env).await,
+        "push" => handle_push_event(body, http, signer, clock).await,
         "pull_request" => handle_pull_request_event(body).await,
         "check_suite" => handle_check_suite_event(body).await,
         _ => Ok(()),
@@ -118,7 +120,7 @@ struct CheckSuite {
     head_sha: String,
 }
 
-async fn handle_push_event(body: &str, http: &dyn HttpClient, env: &dyn Environment) -> Result<()> {
+async fn handle_push_event(body: &str, http: &dyn HttpClient, signer: &dyn JwtSigner, clock: &dyn Clock) -> Result<()> {
     let event: PushEvent =
         serde_json::from_str(body).map_err(|e| ApiError::invalid_request(format!("invalid JSON: {}", e)))?;
 
@@ -134,7 +136,7 @@ async fn handle_push_event(body: &str, http: &dyn HttpClient, env: &dyn Environm
         .map(|s| s.as_str())
         .collect();
 
-    validate_policy_files(owner, repo, head_sha, &policy_files, http, env).await
+    validate_policy_files(owner, repo, head_sha, &policy_files, http, signer, clock).await
 }
 
 async fn handle_pull_request_event(body: &str) -> Result<()> {
@@ -171,10 +173,11 @@ async fn validate_policy_files(
     head_sha: &str,
     files: &[&str],
     http: &dyn HttpClient,
-    env: &dyn Environment,
+    signer: &dyn JwtSigner,
+    clock: &dyn Clock,
 ) -> Result<()> {
     for file in files {
-        let result = validate_single_policy(owner, repo, file, head_sha, http, env).await;
+        let result = validate_single_policy(owner, repo, file, head_sha, http, signer, clock).await;
 
         let (conclusion, title, summary) = match result {
             Ok(()) => ("success", "Policy valid", format!("{} is valid", file)),
@@ -186,7 +189,7 @@ async fn validate_policy_files(
         };
 
         let check_name = format!("octo-sts: {}", file);
-        api::create_check_run(owner, repo, head_sha, &check_name, conclusion, title, &summary, http, env)
+        api::create_check_run(owner, repo, head_sha, &check_name, conclusion, title, &summary, http, signer, clock)
             .await?;
     }
 
@@ -199,9 +202,10 @@ async fn validate_single_policy(
     path: &str,
     git_ref: &str,
     http: &dyn HttpClient,
-    env: &dyn Environment,
+    signer: &dyn JwtSigner,
+    clock: &dyn Clock,
 ) -> Result<()> {
-    let content = api::get_file_content(owner, repo, path, Some(git_ref), http, env).await?;
+    let content = api::get_file_content(owner, repo, path, Some(git_ref), http, signer, clock).await?;
 
     let is_org_policy = repo == ".github";
 

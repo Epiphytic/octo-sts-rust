@@ -29,3 +29,8 @@ sha2 = "0.10"
 
 # Async
 async-trait = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }
+rsa = "0.9"
+rand = "0.8"

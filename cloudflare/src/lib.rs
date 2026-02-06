@@ -3,6 +3,7 @@
 use worker::*;
 
 use octo_sts_core::error::{ApiError, ErrorResponse};
+use octo_sts_core::github::auth::PemJwtSigner;
 use octo_sts_core::sts;
 
 mod platform;
@@ -30,6 +31,18 @@ fn handle_health() -> Result<Response> {
     }))
 }
 
+fn make_signer(env: &worker::Env) -> std::result::Result<PemJwtSigner, ApiError> {
+    let app_id = env
+        .secret("GITHUB_APP_ID")
+        .map_err(|_| ApiError::internal("GITHUB_APP_ID secret not set"))?
+        .to_string();
+    let pem_key = env
+        .secret("GITHUB_APP_PRIVATE_KEY")
+        .map_err(|_| ApiError::internal("GITHUB_APP_PRIVATE_KEY secret not set"))?
+        .to_string();
+    Ok(PemJwtSigner { app_id, pem_key })
+}
+
 async fn handle_exchange(req: Request, ctx: RouteContext<()>) -> Result<Response> {
     let env = &ctx.env;
     let cache = WorkersKvCache::new(env);
@@ -37,12 +50,17 @@ async fn handle_exchange(req: Request, ctx: RouteContext<()>) -> Result<Response
     let clock = JsClock;
     let wenv = WorkersEnv::new(env);
 
+    let signer = match make_signer(env) {
+        Ok(s) => s,
+        Err(e) => return error_response(&e),
+    };
+
     let request = match parse_exchange_request(&req) {
         Ok(r) => r,
         Err(e) => return error_response(&e),
     };
 
-    match sts::exchange::handle(request, &cache, &http, &wenv, &clock).await {
+    match sts::exchange::handle(request, &cache, &http, &wenv, &clock, &signer).await {
         Ok(response) => Response::from_json(&response),
         Err(e) => error_response(&e),
     }
@@ -53,14 +71,18 @@ async fn handle_exchange_pat(req: Request, ctx: RouteContext<()>) -> Result<Resp
     let cache = WorkersKvCache::new(env);
     let http = WorkersFetchClient;
     let clock = JsClock;
-    let wenv = WorkersEnv::new(env);
+
+    let signer = match make_signer(env) {
+        Ok(s) => s,
+        Err(e) => return error_response(&e),
+    };
 
     let request = match parse_pat_exchange_request(&req) {
         Ok(r) => r,
         Err(e) => return error_response(&e),
     };
 
-    match sts::exchange_pat::handle(request, &cache, &http, &wenv, &clock).await {
+    match sts::exchange_pat::handle(request, &cache, &http, &clock, &signer).await {
         Ok(response) => Response::from_json(&response),
         Err(e) => error_response(&e),
     }
@@ -83,7 +105,13 @@ async fn handle_revoke(req: Request, _ctx: RouteContext<()>) -> Result<Response>
 async fn handle_webhook(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
     let env = &ctx.env;
     let http = WorkersFetchClient;
+    let clock = JsClock;
     let wenv = WorkersEnv::new(env);
+
+    let signer = match make_signer(env) {
+        Ok(s) => s,
+        Err(e) => return error_response(&e),
+    };
 
     let body = req
         .text()
@@ -102,8 +130,16 @@ async fn handle_webhook(mut req: Request, ctx: RouteContext<()>) -> Result<Respo
         .map_err(|_| worker::Error::RustError("failed to read headers".into()))?
         .unwrap_or_default();
 
-    match octo_sts_core::github::webhook::handle(&body, &signature, &event_type, &http, &wenv)
-        .await
+    match octo_sts_core::github::webhook::handle(
+        &body,
+        &signature,
+        &event_type,
+        &http,
+        &wenv,
+        &signer,
+        &clock,
+    )
+    .await
     {
         Ok(()) => Response::from_json(&serde_json::json!({"ok": true})),
         Err(e) => error_response(&e),
