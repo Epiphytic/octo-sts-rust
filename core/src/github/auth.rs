@@ -1,0 +1,301 @@
+//! GitHub App authentication
+//!
+//! Generates App JWTs and requests installation tokens.
+
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+use crate::config::Config;
+use crate::error::{ApiError, Result};
+use crate::platform::{Clock, HttpClient};
+
+const GITHUB_API_BASE: &str = "https://api.github.com";
+
+/// GitHub App JWT claims
+#[derive(Serialize, Deserialize)]
+struct AppJwtClaims {
+    iat: i64,
+    exp: i64,
+    iss: String,
+}
+
+/// Installation token response from GitHub
+#[derive(Deserialize)]
+struct InstallationTokenResponse {
+    token: String,
+    expires_at: String,
+}
+
+/// Create a GitHub installation token with scoped permissions
+pub async fn create_installation_token(
+    installation_id: u64,
+    scope: &str,
+    permissions: &HashMap<String, String>,
+    config: &Config,
+    http: &dyn HttpClient,
+    clock: &dyn Clock,
+) -> Result<(String, String)> {
+    let app_jwt = generate_app_jwt(config, clock)?;
+
+    let repo = scope
+        .split('/')
+        .nth(1)
+        .ok_or_else(|| ApiError::invalid_request("invalid scope format"))?;
+
+    let body = serde_json::json!({
+        "repositories": [repo],
+        "permissions": permissions
+    });
+
+    let url = format!(
+        "{}/app/installations/{}/access_tokens",
+        GITHUB_API_BASE, installation_id
+    );
+
+    let auth_header = format!("Bearer {}", app_jwt);
+    let headers = [
+        ("Authorization", auth_header.as_str()),
+        ("Accept", "application/vnd.github+json"),
+        ("User-Agent", "octo-sts-rust"),
+        ("X-GitHub-Api-Version", "2022-11-28"),
+    ];
+
+    let body_bytes = body.to_string().into_bytes();
+    let response = http
+        .post(&url, &headers, &body_bytes)
+        .await
+        .map_err(|e| ApiError::upstream_error(format!("failed to call GitHub API: {}", e)))?;
+
+    if response.status != 201 {
+        let error_body = response.text().unwrap_or_else(|_| "unknown error".to_string());
+        return Err(ApiError::upstream_error(format!(
+            "GitHub API error ({}): {}",
+            response.status, error_body
+        )));
+    }
+
+    let token_response: InstallationTokenResponse = response
+        .json()
+        .map_err(|e| ApiError::upstream_error(format!("failed to parse response: {}", e)))?;
+
+    Ok((token_response.token, token_response.expires_at))
+}
+
+/// Generate a GitHub App JWT for API authentication
+fn generate_app_jwt(config: &Config, clock: &dyn Clock) -> Result<String> {
+    generate_app_jwt_with_timestamp(config, clock.now_secs() as i64)
+}
+
+/// Generate a GitHub App JWT with a specific timestamp (for testing)
+fn generate_app_jwt_with_timestamp(config: &Config, now: i64) -> Result<String> {
+    use surrealdb_jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+
+    let iat = now - 60;
+    let exp = now + 600;
+
+    let claims = AppJwtClaims {
+        iat,
+        exp,
+        iss: config.github_app_id.clone(),
+    };
+
+    let key = EncodingKey::from_rsa_pem(config.github_app_private_key.as_bytes())
+        .map_err(|e| ApiError::internal(format!("invalid private key: {}", e)))?;
+
+    let header = Header::new(Algorithm::RS256);
+
+    encode(&header, &claims, &key)
+        .map_err(|e| ApiError::internal(format!("failed to encode JWT: {}", e)))
+}
+
+/// Get installation ID for an owner
+pub async fn get_installation_id(
+    owner: &str,
+    config: &Config,
+    http: &dyn HttpClient,
+    clock: &dyn Clock,
+) -> Result<u64> {
+    let app_jwt = generate_app_jwt(config, clock)?;
+
+    let url = format!("{}/orgs/{}/installation", GITHUB_API_BASE, owner);
+    let auth_header = format!("Bearer {}", app_jwt);
+    let headers = [
+        ("Authorization", auth_header.as_str()),
+        ("Accept", "application/vnd.github+json"),
+        ("User-Agent", "octo-sts-rust"),
+    ];
+
+    let mut response = http
+        .get(&url, &headers)
+        .await
+        .map_err(|e| ApiError::upstream_error(format!("failed to call GitHub API: {}", e)))?;
+
+    // Try org endpoint first, fall back to user endpoint
+    if response.status == 404 {
+        let url = format!("{}/users/{}/installation", GITHUB_API_BASE, owner);
+        response = http
+            .get(&url, &headers)
+            .await
+            .map_err(|e| ApiError::upstream_error(format!("failed to call GitHub API: {}", e)))?;
+    }
+
+    if response.status == 404 {
+        return Err(ApiError::installation_not_found(format!(
+            "GitHub App not installed for '{}'",
+            owner
+        )));
+    }
+
+    if response.status != 200 {
+        return Err(ApiError::upstream_error(format!(
+            "GitHub API error: {}",
+            response.status
+        )));
+    }
+
+    #[derive(Deserialize)]
+    struct InstallationResponse {
+        id: u64,
+    }
+
+    let installation: InstallationResponse = response
+        .json()
+        .map_err(|e| ApiError::upstream_error(format!("failed to parse response: {}", e)))?;
+
+    Ok(installation.id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TEST_PRIVATE_KEY: &str = r#"-----BEGIN RSA PRIVATE KEY-----
+MIIEowIBAAKCAQEA6MrBHOiK5PRe62kAoMcZ5Gs2H2HndnzFnRlVYVfWAIByrS9Z
+DugSGRFleHtoG7a2e4bM5wrmzR72ov/+VADXENi/uxYZML5TtYD0YLnDCHXoT3tO
+fGfzUy/NoPfQjFnBhPl5HOzuI7wx6NY2/YiacGPxynk4GdW4oEgPs2YQO543NWsT
+K655fy/hxrNSYFKDKWtJIxMKXa7q/LnuW+aMWqTdo7VlYPU1GkSg/Caknd7utguF
+5mpWeVn8bCjpeKeNVE0/EF4Be31bPY04ziMgMUrkjk3P4K/S8+EIAkvFJZzg2pT3
+iHL89o4GtY/AkyPylGmYhSg/k7L2jEDq3lyPWQIDAQABAoIBAQDUrwmoQ71CWRGv
+uotcWQuK6XjVSzmRw4U4dsDO4tUeODyNhci0GcsPJBm07eq8Bz7JtOrX29nqZfOo
+EIJodSwItD7XyuTQ59LK7TpYdN9/h1nr5BhdCQwCYJZaDo926zonJ1ZD2yPnejWP
+KMes83VGYcmy1vUuhVjc93mAyirii3hzYDCSJWgOPV/U/LV7xu5VcAGkwVW+mT0n
+3A72omyQsuxsMzkMqEI/xArpj0QKJzrppG8S0JPZsXWgD442uAWzGMK4GkOj1Ywi
+OhTfTJtW9KtbjjGSBM37NumjYIo+NnI5vSL02CWdQkrkIWxN9KqSLjQqKfCFxs2f
+PYu7cdpRAoGBAPkSFiKHhUnoueg03RzOYB+5N/L8g2xlon1p0Re9ca8axTaTrYzo
+n8A7of4LPptjLYNoQ8l+q+CZjBpYeLztkAHbC6F/fiVVKI0JC8pZNGdJPhBFrj/Z
+jkFV5132ypDlN9QXRVhdk7STf9c8Q+TA41dV3z/FoNZ4HJuIA4z08oe3AoGBAO9E
+urJ7iP/BQtS9K8KS+J8jy7yJgCEJ/i7fidd6yvnu7phOrUSbSOQnAE9SjK/3wkb1
+VNdyXabT3IZ9ODpVvcHpwoovho3qiZ3b0ntUJEHlOm4vCDR62awFw3bdrdm8ZgF1
+LLasnKSPjiRdP2gT2f36qMLY8100uuwVjO4GtAFvAoGAHyYH5qGUJb4ZIdUaofOd
+SdpcCONTfEbpn02QfKuQgBmU+FJXrfuZnuzWQXMejUhF9N0hPR2+WQRa5SCTWO1M
+yS6fsb7EA982hwzOkKu/Rft+64ILXKjUhY88tB+dDanc5YVTgs2RH1Ai+MPsqbsF
+s3JlzQ/mIWw8B6dm6kXn3tkCgYANDUu95r0/blRt9G/JqmjDjZlUjI+fvcLO3cTQ
+K1OdNKpxRoFvJ6VfRL1gllk0VCiV5FYfdo6jRhVWhMgnbnvucwj4rsUBQtUE9nPR
+5HIh4hZA4nHpIvZyytGxzz/ni75ov/KTeHEHDQms9CU8UTDoCN9h2aHU6MZ1kGti
+pJz3IwKBgEbqya7GswZmYXsyXP1HZlMZk+emjUSjZukNTQkksut6fnEHt/6BIMpm
+9Vhm11LAE5A4QXWspnFgVPnuM8HVwTzQsjgbrlNKXT7uPQD5qu3cvmeYC2XigamA
+4c/Pq3QHp/ThHVl+L9nHzg0WmgdbtyGY3seCRQYAtSVcPeIRD0eW
+-----END RSA PRIVATE KEY-----"#;
+
+    const TEST_TIMESTAMP: i64 = 1706900000;
+
+    fn make_test_config() -> Config {
+        Config {
+            domain: "test.example.com".to_string(),
+            github_app_id: "12345".to_string(),
+            github_app_private_key: TEST_PRIVATE_KEY.to_string(),
+            github_webhook_secret: "test-secret".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_generate_app_jwt_produces_valid_jwt() {
+        let config = make_test_config();
+        let jwt = generate_app_jwt_with_timestamp(&config, TEST_TIMESTAMP)
+            .expect("JWT generation should succeed");
+
+        let parts: Vec<&str> = jwt.split('.').collect();
+        assert_eq!(parts.len(), 3, "JWT should have 3 parts");
+
+        assert!(!parts[0].is_empty(), "Header should not be empty");
+        assert!(!parts[1].is_empty(), "Payload should not be empty");
+        assert!(!parts[2].is_empty(), "Signature should not be empty");
+    }
+
+    #[test]
+    fn test_generate_app_jwt_has_correct_header() {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+
+        let config = make_test_config();
+        let jwt = generate_app_jwt_with_timestamp(&config, TEST_TIMESTAMP)
+            .expect("JWT generation should succeed");
+
+        let parts: Vec<&str> = jwt.split('.').collect();
+        let header_json = URL_SAFE_NO_PAD.decode(parts[0]).expect("Header should be valid base64");
+        let header: serde_json::Value =
+            serde_json::from_slice(&header_json).expect("Header should be valid JSON");
+
+        assert_eq!(header["alg"], "RS256", "Algorithm should be RS256");
+        assert_eq!(header["typ"], "JWT", "Type should be JWT");
+    }
+
+    #[test]
+    fn test_generate_app_jwt_has_correct_claims() {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+
+        let config = make_test_config();
+        let jwt = generate_app_jwt_with_timestamp(&config, TEST_TIMESTAMP)
+            .expect("JWT generation should succeed");
+
+        let parts: Vec<&str> = jwt.split('.').collect();
+        let payload_json = URL_SAFE_NO_PAD.decode(parts[1]).expect("Payload should be valid base64");
+        let claims: serde_json::Value =
+            serde_json::from_slice(&payload_json).expect("Payload should be valid JSON");
+
+        assert_eq!(claims["iss"], "12345", "Issuer should be app ID");
+
+        let iat = claims["iat"].as_i64().expect("iat should be a number");
+        assert_eq!(iat, TEST_TIMESTAMP - 60, "iat should be timestamp minus 60");
+
+        let exp = claims["exp"].as_i64().expect("exp should be a number");
+        assert_eq!(exp, TEST_TIMESTAMP + 600, "exp should be timestamp plus 600");
+
+        assert_eq!(exp - iat, 660, "exp - iat should be 660 seconds");
+    }
+
+    #[test]
+    fn test_generate_app_jwt_with_invalid_key_fails() {
+        let config = Config {
+            domain: "test.example.com".to_string(),
+            github_app_id: "12345".to_string(),
+            github_app_private_key: "invalid-key".to_string(),
+            github_webhook_secret: "test-secret".to_string(),
+        };
+
+        let result = generate_app_jwt_with_timestamp(&config, TEST_TIMESTAMP);
+        assert!(result.is_err(), "Should fail with invalid key");
+    }
+
+    #[test]
+    fn test_generate_app_jwt_can_be_decoded() {
+        use surrealdb_jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
+
+        let config = make_test_config();
+        let jwt = generate_app_jwt_with_timestamp(&config, TEST_TIMESTAMP)
+            .expect("JWT generation should succeed");
+
+        let mut validation = Validation::new(Algorithm::RS256);
+        validation.insecure_disable_signature_validation();
+        validation.validate_exp = false;
+        validation.set_required_spec_claims::<&str>(&[]);
+
+        let key = DecodingKey::from_secret(&[]);
+
+        let decoded = decode::<AppJwtClaims>(&jwt, &key, &validation)
+            .expect("JWT should be decodable");
+
+        assert_eq!(decoded.claims.iss, "12345");
+        assert_eq!(decoded.claims.iat, TEST_TIMESTAMP - 60);
+        assert_eq!(decoded.claims.exp, TEST_TIMESTAMP + 600);
+    }
+}

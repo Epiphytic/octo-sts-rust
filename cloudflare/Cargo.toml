@@ -1,0 +1,28 @@
+[package]
+name = "octo-sts-cloudflare"
+version = "0.1.0"
+edition = "2021"
+authors = ["Epiphytic"]
+description = "Cloudflare Workers adapter for octo-sts"
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+octo-sts-core = { path = "../core" }
+
+# Cloudflare Workers
+worker = "0.7"
+
+# Serialization (needed for response construction)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# WASM support
+getrandom = { version = "0.2", features = ["js"] }
+js-sys = "0.3"
+
+# Async
+futures = "0.3"
+async-trait = "0.1"

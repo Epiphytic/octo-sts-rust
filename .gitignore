@@ -33,3 +33,4 @@ terraform/*.tfplan
 terraform/crash.log
 
 .worktrees/
+node_modules/
