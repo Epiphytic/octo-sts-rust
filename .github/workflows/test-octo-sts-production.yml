@@ -1,0 +1,173 @@
+---
+# Test workflow for octo-sts-rust PRODUCTION
+# Validates token exchange and permission scoping against sts.epiphytic.org
+
+name: Test octo-sts Production
+
+on:
+  push:
+    branches:
+      - main
+
+  pull_request:
+    branches:
+      - main
+
+  workflow_dispatch:
+
+env:
+  STS_URL: https://sts.epiphytic.org
+
+jobs:
+  test-token-exchange:
+    name: Test Production Token Exchange
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get OIDC token from GitHub
+        id: oidc
+        env:
+          STS_AUDIENCE: https://sts.epiphytic.org
+        run: |
+          OIDC_TOKEN=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$STS_AUDIENCE" | jq -r '.value')
+
+          if [[ -z "$OIDC_TOKEN" || "$OIDC_TOKEN" == "null" ]]; then
+            echo "Failed to get OIDC token"
+            exit 1
+          fi
+
+          echo "OIDC token obtained (length: ${#OIDC_TOKEN})"
+          echo "oidc_token=$OIDC_TOKEN" >> $GITHUB_OUTPUT
+
+      - name: Exchange OIDC token for GitHub token via octo-sts production
+        id: sts
+        env:
+          OIDC_TOKEN: ${{ steps.oidc.outputs.oidc_token }}
+          STS_EXCHANGE_URL: https://sts.epiphytic.org/sts/exchange?scope=Epiphytic/.github&identity=octo-sts-production
+        run: |
+          echo "Exchanging OIDC token at production STS"
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            -X POST \
+            -H "Authorization: Bearer ${OIDC_TOKEN}" \
+            -H "Content-Type: application/json" \
+            "$STS_EXCHANGE_URL")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+
+          echo "HTTP Status: $HTTP_CODE"
+
+          if [[ "$HTTP_CODE" != "200" ]]; then
+            echo "Token exchange failed!"
+            echo "Response: $BODY"
+            exit 1
+          fi
+
+          TOKEN=$(echo "$BODY" | jq -r '.access_token')
+          EXPIRES_IN=$(echo "$BODY" | jq -r '.expires_in')
+
+          if [[ -z "$TOKEN" || "$TOKEN" == "null" ]]; then
+            echo "Failed to extract token from response"
+            echo "Response: $BODY"
+            exit 1
+          fi
+
+          echo "Token obtained successfully!"
+          echo "Token type: $(echo "$BODY" | jq -r '.token_type')"
+          echo "Expires in: $EXPIRES_IN seconds"
+          echo "Token prefix: ${TOKEN:0:10}..."
+
+          echo "token=$TOKEN" >> $GITHUB_OUTPUT
+
+      - name: "POSITIVE: Read octo-sts-rust contents"
+        env:
+          STS_TOKEN: ${{ steps.sts.outputs.token }}
+        run: |
+          echo "Testing: Read contents from octo-sts-rust (ALLOWED)"
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            -H "Authorization: Bearer ${STS_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/Epiphytic/octo-sts-rust/contents/README.md")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+
+          echo "HTTP Status: $HTTP_CODE"
+          if [[ "$HTTP_CODE" == "200" ]]; then
+            echo "SUCCESS: Can read octo-sts-rust contents"
+          else
+            echo "FAILED: Expected 200, got $HTTP_CODE"
+            echo "Response: $BODY"
+            exit 1
+          fi
+
+      - name: "POSITIVE: Read gear contents"
+        env:
+          STS_TOKEN: ${{ steps.sts.outputs.token }}
+        run: |
+          echo "Testing: Read contents from gear (ALLOWED)"
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            -H "Authorization: Bearer ${STS_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/Epiphytic/gear/contents/CLAUDE.md")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+
+          echo "HTTP Status: $HTTP_CODE"
+          if [[ "$HTTP_CODE" == "200" ]]; then
+            echo "SUCCESS: Can read gear contents"
+          else
+            echo "FAILED: Expected 200, got $HTTP_CODE"
+            echo "Response: $BODY"
+            exit 1
+          fi
+
+      - name: "NEGATIVE: Cannot read tillandsia (not in allowed list)"
+        env:
+          STS_TOKEN: ${{ steps.sts.outputs.token }}
+        run: |
+          echo "Testing: Read contents from tillandsia (NOT ALLOWED)"
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            -H "Authorization: Bearer ${STS_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/Epiphytic/tillandsia/contents/README.md")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+
+          echo "HTTP Status: $HTTP_CODE"
+          if [[ "$HTTP_CODE" == "403" || "$HTTP_CODE" == "404" ]]; then
+            echo "SUCCESS: Correctly denied access to tillandsia (got $HTTP_CODE)"
+          else
+            echo "FAILED: Expected 403 or 404, got $HTTP_CODE"
+            echo "Response: $BODY"
+            exit 1
+          fi
+
+      - name: Test Summary
+        env:
+          STS_URL_DISPLAY: https://sts.epiphytic.org
+        run: |
+          echo "========================================="
+          echo "octo-sts PRODUCTION Test Summary"
+          echo "========================================="
+          echo ""
+          echo "STS URL: $STS_URL_DISPLAY"
+          echo ""
+          echo "POSITIVE TESTS (should succeed):"
+          echo "  - Read octo-sts-rust contents"
+          echo "  - Read gear contents"
+          echo ""
+          echo "NEGATIVE TESTS (should be denied):"
+          echo "  - Read tillandsia contents"
+          echo ""
+          echo "All tests passed! Production trust policy is working correctly."
