@@ -41,7 +41,7 @@ pub async fn handle(
     let claims = oidc::validate_token(&request.bearer_token, http, clock).await?;
 
     // 2. Load trust policy (with caching)
-    let compiled_policy = policy::load(&request.scope, &request.identity, cache, http, signer).await?;
+    let compiled_policy = policy::load(&request.scope, &request.identity, cache, http, signer, clock).await?;
 
     // 3. Extract target repo from scope for repository validation
     let parts: Vec<&str> = request.scope.split('/').collect();

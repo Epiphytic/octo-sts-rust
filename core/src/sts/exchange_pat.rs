@@ -65,7 +65,7 @@ pub async fn handle(
     let user = validate_pat_and_get_user(&request.bearer_token, http).await?;
 
     // 2. Load PAT trust policy
-    let policy = load_pat_policy(&request.scope, &request.identity, cache, http, signer).await?;
+    let policy = load_pat_policy(&request.scope, &request.identity, cache, http, signer, clock).await?;
 
     // 3. Check org membership
     check_org_membership(&request.bearer_token, &policy.required_org, &user.login, http).await?;
@@ -230,6 +230,7 @@ async fn load_pat_policy(
     cache: &dyn Cache,
     http: &dyn HttpClient,
     signer: &dyn JwtSigner,
+    clock: &dyn Clock,
 ) -> Result<PatTrustPolicy> {
     crate::policy::validate_identity(identity)?;
 
@@ -248,7 +249,7 @@ async fn load_pat_policy(
 
     // Fetch from GitHub (from org's .github repo)
     let path = format!(".github/chainguard/{}.pat.yaml", identity);
-    let yaml_content = crate::github::api::get_file_content(owner, ".github", &path, None, http, signer).await?;
+    let yaml_content = crate::github::api::get_file_content(owner, ".github", &path, None, http, signer, clock).await?;
 
     let policy: PatTrustPolicy = serde_yaml::from_str(&yaml_content)
         .map_err(|e| ApiError::invalid_request(format!("invalid PAT policy YAML: {}", e)))?;

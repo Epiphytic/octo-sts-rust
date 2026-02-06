@@ -105,6 +105,7 @@ async fn handle_revoke(req: Request, _ctx: RouteContext<()>) -> Result<Response>
 async fn handle_webhook(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
     let env = &ctx.env;
     let http = WorkersFetchClient;
+    let clock = JsClock;
     let wenv = WorkersEnv::new(env);
 
     let signer = match make_signer(env) {
@@ -136,6 +137,7 @@ async fn handle_webhook(mut req: Request, ctx: RouteContext<()>) -> Result<Respo
         &http,
         &wenv,
         &signer,
+        &clock,
     )
     .await
     {

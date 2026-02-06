@@ -3,7 +3,7 @@
 //! Fetches content from GitHub repositories.
 
 use crate::error::{ApiError, Result};
-use crate::platform::{HttpClient, JwtSigner};
+use crate::platform::{Clock, HttpClient, JwtSigner};
 
 use super::auth;
 
@@ -17,8 +17,9 @@ pub async fn get_file_content(
     git_ref: Option<&str>,
     http: &dyn HttpClient,
     signer: &dyn JwtSigner,
+    clock: &dyn Clock,
 ) -> Result<String> {
-    let installation_id = auth::get_installation_id(owner, signer, http, &WallClock).await?;
+    let installation_id = auth::get_installation_id(owner, signer, http, clock).await?;
     let (token, _) = auth::create_installation_token(
         installation_id,
         &format!("{}/{}", owner, repo),
@@ -27,7 +28,7 @@ pub async fn get_file_content(
             .collect(),
         signer,
         http,
-        &WallClock,
+        clock,
     )
     .await?;
 
@@ -78,8 +79,9 @@ pub async fn create_check_run(
     summary: &str,
     http: &dyn HttpClient,
     signer: &dyn JwtSigner,
+    clock: &dyn Clock,
 ) -> Result<()> {
-    let installation_id = auth::get_installation_id(owner, signer, http, &WallClock).await?;
+    let installation_id = auth::get_installation_id(owner, signer, http, clock).await?;
     let (token, _) = auth::create_installation_token(
         installation_id,
         &format!("{}/{}", owner, repo),
@@ -88,7 +90,7 @@ pub async fn create_check_run(
             .collect(),
         signer,
         http,
-        &WallClock,
+        clock,
     )
     .await?;
 
@@ -129,16 +131,3 @@ pub async fn create_check_run(
     Ok(())
 }
 
-/// Wall clock implementation for internal use in api.rs
-/// This is used when we need a clock for JWT generation but the caller
-/// doesn't pass one (e.g., webhook handlers, policy loading).
-struct WallClock;
-
-impl crate::platform::Clock for WallClock {
-    fn now_secs(&self) -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs()
-    }
-}
