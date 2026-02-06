@@ -238,7 +238,7 @@ mod tests {
     fn test_compile_policy_fails_without_issuer() {
         let policy = TrustPolicy {
             issuer: None,
-            issuer_pattern: None, // Neither set
+            issuer_pattern: None,
             subject: Some("test".to_string()),
             subject_pattern: None,
             audience: None,
@@ -258,7 +258,7 @@ mod tests {
             issuer: Some("https://example.com".to_string()),
             issuer_pattern: None,
             subject: None,
-            subject_pattern: None, // Neither set
+            subject_pattern: None,
             audience: None,
             audience_pattern: None,
             claim_patterns: HashMap::new(),
@@ -274,7 +274,7 @@ mod tests {
     fn test_compile_policy_fails_with_both_issuer_and_pattern() {
         let policy = TrustPolicy {
             issuer: Some("https://example.com".to_string()),
-            issuer_pattern: Some(".*".to_string()), // Both set
+            issuer_pattern: Some(".*".to_string()),
             subject: Some("test".to_string()),
             subject_pattern: None,
             audience: None,
@@ -295,7 +295,7 @@ mod tests {
             subject: Some("test".to_string()),
             subject_pattern: None,
             audience: Some("aud".to_string()),
-            audience_pattern: Some(".*".to_string()), // Both set
+            audience_pattern: Some(".*".to_string()),
             claim_patterns: HashMap::new(),
             permissions: HashMap::new(),
         };
@@ -308,7 +308,7 @@ mod tests {
     fn test_compile_policy_fails_with_invalid_regex() {
         let policy = TrustPolicy {
             issuer: None,
-            issuer_pattern: Some("[invalid".to_string()), // Invalid regex
+            issuer_pattern: Some("[invalid".to_string()),
             subject: Some("test".to_string()),
             subject_pattern: None,
             audience: None,
@@ -384,13 +384,12 @@ mod tests {
             issuer_pattern: None,
             subject: Some("test".to_string()),
             subject_pattern: None,
-            audience: None,         // Not set
-            audience_pattern: None, // Not set
+            audience: None,
+            audience_pattern: None,
             claim_patterns: HashMap::new(),
             permissions: HashMap::new(),
         };
 
-        // Should succeed - audience is optional
         let compiled = compile_policy(PolicyType::Repo(policy)).expect("Should compile");
         assert!(compiled.audience.is_none());
         assert!(compiled.audience_regex.is_none());
@@ -398,7 +397,7 @@ mod tests {
 
     #[test]
     fn test_compile_policy_rejects_overly_long_pattern() {
-        let long_pattern = "a".repeat(300); // Exceeds MAX_PATTERN_LENGTH
+        let long_pattern = "a".repeat(300);
         let policy = TrustPolicy {
             issuer: None,
             issuer_pattern: Some(long_pattern),
@@ -419,7 +418,6 @@ mod tests {
     fn test_compile_policy_rejects_too_many_claim_patterns() {
         let mut claim_patterns = HashMap::new();
         for i in 0..15 {
-            // More than MAX_CLAIM_PATTERNS
             claim_patterns.insert(format!("claim_{}", i), "value".to_string());
         }
 
@@ -441,10 +439,8 @@ mod tests {
 
     #[test]
     fn test_validate_pattern_length() {
-        // Valid pattern
         assert!(validate_pattern_length("^test$", "test").is_ok());
 
-        // Too long
         let long_pattern = "a".repeat(300);
         let result = validate_pattern_length(&long_pattern, "test");
         assert!(result.is_err());

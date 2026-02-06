@@ -1,17 +1,14 @@
 //! PAT (Personal Access Token) exchange endpoint
 //!
 //! Exchanges GitHub PAT/OAuth tokens for scoped GitHub App installation tokens.
-//! This allows developers to use their `gh auth token` to get short-lived,
-//! scoped tokens for specific operations.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use worker::{Env, Fetch, Headers, Method, Request, RequestInit, Url};
 
-use crate::config::Config;
+use crate::config::{Config, INSTALL_CACHE_TTL_SECS};
 use crate::error::{ApiError, Result};
 use crate::github::auth;
-use crate::kv;
+use crate::platform::{cache_get, cache_put, Cache, Clock, Environment, HttpClient};
 
 /// PAT exchange response
 #[derive(Serialize)]
@@ -21,10 +18,18 @@ pub struct ExchangeResponse {
     pub expires_in: u64,
 }
 
+/// Platform-neutral PAT exchange request
+pub struct PatExchangeRequest {
+    pub scope: String,
+    pub identity: String,
+    pub bearer_token: String,
+}
+
 /// GitHub user info from /user endpoint
 #[derive(Deserialize)]
 struct GitHubUser {
     login: String,
+    #[allow(dead_code)]
     id: u64,
 }
 
@@ -37,7 +42,7 @@ struct GitHubOrg {
 /// PAT trust policy
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PatTrustPolicy {
-    /// Required org membership (user must be a member of this org)
+    /// Required org membership
     pub required_org: String,
 
     /// Permissions to grant
@@ -49,26 +54,26 @@ pub struct PatTrustPolicy {
 }
 
 /// Handle PAT exchange request
-pub async fn handle(req: Request, env: &Env) -> Result<ExchangeResponse> {
+pub async fn handle(
+    request: PatExchangeRequest,
+    cache: &dyn Cache,
+    http: &dyn HttpClient,
+    env: &dyn Environment,
+    clock: &dyn Clock,
+) -> Result<ExchangeResponse> {
     let config = Config::from_env(env)?;
 
-    // 1. Parse request parameters
-    let params = parse_request(&req)?;
+    // 1. Validate PAT and get user info
+    let user = validate_pat_and_get_user(&request.bearer_token, http).await?;
 
-    // 2. Extract PAT from Authorization header
-    let pat = extract_bearer_token(&req)?;
+    // 2. Load PAT trust policy
+    let policy = load_pat_policy(&request.scope, &request.identity, cache, http, env).await?;
 
-    // 3. Validate PAT and get user info
-    let user = validate_pat_and_get_user(&pat).await?;
+    // 3. Check org membership
+    check_org_membership(&request.bearer_token, &policy.required_org, &user.login, http).await?;
 
-    // 4. Load PAT trust policy
-    let policy = load_pat_policy(&params.scope, &params.identity, env).await?;
-
-    // 5. Check org membership
-    check_org_membership(&pat, &policy.required_org, &user.login).await?;
-
-    // 6. Validate repository access
-    let parts: Vec<&str> = params.scope.split('/').collect();
+    // 4. Validate repository access
+    let parts: Vec<&str> = request.scope.split('/').collect();
     if parts.len() != 2 {
         return Err(ApiError::invalid_request(
             "scope must be in format owner/repo or owner/.github",
@@ -77,23 +82,23 @@ pub async fn handle(req: Request, env: &Env) -> Result<ExchangeResponse> {
     let owner = parts[0];
     let requested_repo = parts[1];
 
-    // Check if the repository is allowed by the policy
     check_repository_access(&policy, requested_repo)?;
 
-    // 7. Get installation ID for the org
-    let installation_id = kv::get_or_fetch_installation(owner, env, &config).await?;
+    // 5. Get installation ID for the org
+    let installation_id = get_or_fetch_installation(owner, cache, http, &config, clock).await?;
 
-    // 8. Generate GitHub installation token with policy permissions
+    // 6. Generate GitHub installation token with policy permissions
     let (token, expires_at) = auth::create_installation_token(
         installation_id,
-        &params.scope,
+        &request.scope,
         &policy.permissions,
         &config,
+        http,
+        clock,
     )
     .await?;
 
-    // Calculate expires_in from expires_at
-    let expires_in = calculate_expires_in(&expires_at).unwrap_or(3600);
+    let expires_in = calculate_expires_in(&expires_at, clock).unwrap_or(3600);
 
     Ok(ExchangeResponse {
         access_token: token,
@@ -102,79 +107,46 @@ pub async fn handle(req: Request, env: &Env) -> Result<ExchangeResponse> {
     })
 }
 
-/// Request parameters
-struct RequestParams {
-    scope: String,
-    identity: String,
-}
+/// Get installation ID from cache or fetch from GitHub
+async fn get_or_fetch_installation(
+    owner: &str,
+    cache: &dyn Cache,
+    http: &dyn HttpClient,
+    config: &Config,
+    clock: &dyn Clock,
+) -> Result<u64> {
+    let cache_key = format!("install:{}", owner);
 
-/// Parse scope and identity from query parameters
-fn parse_request(req: &Request) -> Result<RequestParams> {
-    let url = req.url().map_err(|_| ApiError::invalid_request("invalid URL"))?;
-
-    let scope = get_query_param(&url, "scope")?;
-    let identity = get_query_param(&url, "identity")?;
-
-    Ok(RequestParams { scope, identity })
-}
-
-/// Extract a required query parameter
-fn get_query_param(url: &Url, name: &str) -> Result<String> {
-    url.query_pairs()
-        .find(|(k, _)| k == name)
-        .map(|(_, v)| v.to_string())
-        .ok_or_else(|| ApiError::invalid_request(format!("missing required parameter: {}", name)))
-}
-
-/// Extract bearer token from Authorization header
-fn extract_bearer_token(req: &Request) -> Result<String> {
-    let header = req
-        .headers()
-        .get("Authorization")
-        .map_err(|_| ApiError::invalid_request("failed to read headers"))?
-        .ok_or_else(|| ApiError::invalid_request("missing Authorization header"))?;
-
-    if !header.starts_with("Bearer ") {
-        return Err(ApiError::invalid_request(
-            "Authorization header must use Bearer scheme",
-        ));
+    if let Ok(Some(id)) = cache_get::<u64>(cache, &cache_key).await {
+        return Ok(id);
     }
 
-    Ok(header[7..].to_string())
+    let installation_id = auth::get_installation_id(owner, config, http, clock).await?;
+
+    let _ = cache_put(cache, &cache_key, &installation_id, INSTALL_CACHE_TTL_SECS).await;
+
+    Ok(installation_id)
 }
 
 /// Validate PAT by calling GitHub API and get user info
-async fn validate_pat_and_get_user(pat: &str) -> Result<GitHubUser> {
-    let headers = Headers::new();
-    headers
-        .set("Authorization", &format!("Bearer {}", pat))
-        .map_err(|_| ApiError::internal("failed to set headers"))?;
-    headers
-        .set("Accept", "application/vnd.github+json")
-        .map_err(|_| ApiError::internal("failed to set headers"))?;
-    headers
-        .set("User-Agent", "octo-sts-rust")
-        .map_err(|_| ApiError::internal("failed to set headers"))?;
-    headers
-        .set("X-GitHub-Api-Version", "2022-11-28")
-        .map_err(|_| ApiError::internal("failed to set headers"))?;
+async fn validate_pat_and_get_user(pat: &str, http: &dyn HttpClient) -> Result<GitHubUser> {
+    let auth_header = format!("Bearer {}", pat);
+    let headers = [
+        ("Authorization", auth_header.as_str()),
+        ("Accept", "application/vnd.github+json"),
+        ("User-Agent", "octo-sts-rust"),
+        ("X-GitHub-Api-Version", "2022-11-28"),
+    ];
 
-    let mut init = RequestInit::new();
-    init.with_method(Method::Get).with_headers(headers);
-
-    let request = Request::new_with_init("https://api.github.com/user", &init)
-        .map_err(|_| ApiError::internal("failed to create request"))?;
-
-    let mut response = Fetch::Request(request)
-        .send()
+    let response = http
+        .get("https://api.github.com/user", &headers)
         .await
         .map_err(|e| ApiError::upstream_error(format!("failed to validate PAT: {}", e)))?;
 
-    match response.status_code() {
+    match response.status {
         200 => {
             let user: GitHubUser = response
                 .json()
-                .await
                 .map_err(|e| ApiError::upstream_error(format!("failed to parse user info: {}", e)))?;
             Ok(user)
         }
@@ -182,19 +154,17 @@ async fn validate_pat_and_get_user(pat: &str) -> Result<GitHubUser> {
         403 => Err(ApiError::permission_denied("PAT lacks required scopes")),
         _ => Err(ApiError::upstream_error(format!(
             "GitHub API error: {}",
-            response.status_code()
+            response.status
         ))),
     }
 }
 
 /// Check if the requested repository is allowed by the policy
 fn check_repository_access(policy: &PatTrustPolicy, requested_repo: &str) -> Result<()> {
-    // If repositories list is empty, all repos are allowed
     if policy.repositories.is_empty() {
         return Ok(());
     }
 
-    // Check if the requested repo is in the allowed list (case-insensitive)
     let is_allowed = policy
         .repositories
         .iter()
@@ -211,46 +181,36 @@ fn check_repository_access(policy: &PatTrustPolicy, requested_repo: &str) -> Res
 }
 
 /// Check if user is a member of the required org
-async fn check_org_membership(pat: &str, required_org: &str, username: &str) -> Result<()> {
-    let headers = Headers::new();
-    headers
-        .set("Authorization", &format!("Bearer {}", pat))
-        .map_err(|_| ApiError::internal("failed to set headers"))?;
-    headers
-        .set("Accept", "application/vnd.github+json")
-        .map_err(|_| ApiError::internal("failed to set headers"))?;
-    headers
-        .set("User-Agent", "octo-sts-rust")
-        .map_err(|_| ApiError::internal("failed to set headers"))?;
-    headers
-        .set("X-GitHub-Api-Version", "2022-11-28")
-        .map_err(|_| ApiError::internal("failed to set headers"))?;
+async fn check_org_membership(
+    pat: &str,
+    required_org: &str,
+    username: &str,
+    http: &dyn HttpClient,
+) -> Result<()> {
+    let auth_header = format!("Bearer {}", pat);
+    let headers = [
+        ("Authorization", auth_header.as_str()),
+        ("Accept", "application/vnd.github+json"),
+        ("User-Agent", "octo-sts-rust"),
+        ("X-GitHub-Api-Version", "2022-11-28"),
+    ];
 
-    let mut init = RequestInit::new();
-    init.with_method(Method::Get).with_headers(headers);
-
-    // Check membership via /user/orgs
-    let request = Request::new_with_init("https://api.github.com/user/orgs?per_page=100", &init)
-        .map_err(|_| ApiError::internal("failed to create request"))?;
-
-    let mut response = Fetch::Request(request)
-        .send()
+    let response = http
+        .get("https://api.github.com/user/orgs?per_page=100", &headers)
         .await
         .map_err(|e| ApiError::upstream_error(format!("failed to check org membership: {}", e)))?;
 
-    if response.status_code() != 200 {
+    if response.status != 200 {
         return Err(ApiError::upstream_error(format!(
             "failed to fetch user orgs: {}",
-            response.status_code()
+            response.status
         )));
     }
 
     let orgs: Vec<GitHubOrg> = response
         .json()
-        .await
         .map_err(|e| ApiError::upstream_error(format!("failed to parse orgs: {}", e)))?;
 
-    // Check if user is a member of the required org (case-insensitive)
     let is_member = orgs
         .iter()
         .any(|org| org.login.eq_ignore_ascii_case(required_org));
@@ -266,8 +226,13 @@ async fn check_org_membership(pat: &str, required_org: &str, username: &str) -> 
 }
 
 /// Load PAT trust policy from the org's .github repo
-async fn load_pat_policy(scope: &str, identity: &str, env: &Env) -> Result<PatTrustPolicy> {
-    // Validate identity to prevent path traversal
+async fn load_pat_policy(
+    scope: &str,
+    identity: &str,
+    cache: &dyn Cache,
+    http: &dyn HttpClient,
+    env: &dyn Environment,
+) -> Result<PatTrustPolicy> {
     crate::policy::validate_identity(identity)?;
 
     let parts: Vec<&str> = scope.split('/').collect();
@@ -279,27 +244,26 @@ async fn load_pat_policy(scope: &str, identity: &str, env: &Env) -> Result<PatTr
     let cache_key = format!("pat-policy:{}:{}", scope, identity);
 
     // Try cache first
-    if let Some(policy) = kv::get_cached_pat_policy(&cache_key, env).await? {
+    if let Some(policy) = cache_get::<PatTrustPolicy>(cache, &cache_key).await? {
         return Ok(policy);
     }
 
     // Fetch from GitHub (from org's .github repo)
     let path = format!(".github/chainguard/{}.pat.yaml", identity);
-    let yaml_content = crate::github::api::get_file_content(owner, ".github", &path, None, env).await?;
+    let yaml_content = crate::github::api::get_file_content(owner, ".github", &path, None, http, env).await?;
 
     let policy: PatTrustPolicy = serde_yaml::from_str(&yaml_content)
         .map_err(|e| ApiError::invalid_request(format!("invalid PAT policy YAML: {}", e)))?;
 
     // Cache the policy
-    kv::cache_pat_policy(&cache_key, &policy, 300, env).await?;
+    let _ = cache_put(cache, &cache_key, &policy, 300).await;
 
     Ok(policy)
 }
 
 /// Calculate expires_in from ISO 8601 expires_at timestamp
-fn calculate_expires_in(expires_at: &str) -> Option<u64> {
-    let now_ms = js_sys::Date::now();
-    let now_secs = (now_ms / 1000.0) as i64;
+fn calculate_expires_in(expires_at: &str, clock: &dyn Clock) -> Option<u64> {
+    let now_secs = clock.now_secs() as i64;
 
     use chrono::{DateTime, Utc};
     let expires_dt: DateTime<Utc> = expires_at.parse().ok()?;
@@ -354,7 +318,6 @@ permissions:
             repositories: vec![],
         };
 
-        // Empty list allows any repo
         assert!(check_repository_access(&policy, "any-repo").is_ok());
         assert!(check_repository_access(&policy, ".github").is_ok());
     }
@@ -369,7 +332,6 @@ permissions:
 
         assert!(check_repository_access(&policy, "repo-a").is_ok());
         assert!(check_repository_access(&policy, "repo-b").is_ok());
-        // Case-insensitive
         assert!(check_repository_access(&policy, "REPO-A").is_ok());
     }
 

@@ -2,10 +2,9 @@
 //!
 //! Fetches content from GitHub repositories.
 
-use worker::{Env, Fetch, Headers, Method, Request, RequestInit};
-
 use crate::config::Config;
 use crate::error::{ApiError, Result};
+use crate::platform::{Environment, HttpClient};
 
 use super::auth;
 
@@ -17,12 +16,17 @@ pub async fn get_file_content(
     repo: &str,
     path: &str,
     git_ref: Option<&str>,
-    env: &Env,
+    http: &dyn HttpClient,
+    env: &dyn Environment,
 ) -> Result<String> {
     let config = Config::from_env(env)?;
 
-    // Get installation token for this owner
-    let installation_id = auth::get_installation_id(owner, &config).await?;
+    // For get_file_content we need a clock - use a simple wall clock approach
+    // The caller provides http and env; we create a temporary clock for JWT generation
+    // Note: This function is called in contexts where we don't have a Clock reference.
+    // We accept this coupling because the JWT expiry is 10 minutes, so minor clock
+    // differences don't matter for fetching policy files.
+    let installation_id = auth::get_installation_id(owner, &config, http, &WallClock).await?;
     let (token, _) = auth::create_installation_token(
         installation_id,
         &format!("{}/{}", owner, repo),
@@ -30,10 +34,11 @@ pub async fn get_file_content(
             .into_iter()
             .collect(),
         &config,
+        http,
+        &WallClock,
     )
     .await?;
 
-    // Build URL
     let mut url = format!(
         "{}/repos/{}/{}/contents/{}",
         GITHUB_API_BASE, owner, repo, path
@@ -42,35 +47,22 @@ pub async fn get_file_content(
         url = format!("{}?ref={}", url, r);
     }
 
-    let headers = Headers::new();
-    headers
-        .set("Authorization", &format!("Bearer {}", token))
-        .map_err(|_| ApiError::internal("failed to set headers"))?;
-    headers
-        .set("Accept", "application/vnd.github.raw+json")
-        .map_err(|_| ApiError::internal("failed to set headers"))?;
-    headers
-        .set("User-Agent", "octo-sts-rust")
-        .map_err(|_| ApiError::internal("failed to set headers"))?;
-    headers
-        .set("X-GitHub-Api-Version", "2022-11-28")
-        .map_err(|_| ApiError::internal("failed to set headers"))?;
+    let auth_header = format!("Bearer {}", token);
+    let headers = [
+        ("Authorization", auth_header.as_str()),
+        ("Accept", "application/vnd.github.raw+json"),
+        ("User-Agent", "octo-sts-rust"),
+        ("X-GitHub-Api-Version", "2022-11-28"),
+    ];
 
-    let mut init = RequestInit::new();
-    init.with_method(Method::Get).with_headers(headers);
-
-    let request =
-        Request::new_with_init(&url, &init).map_err(|_| ApiError::internal("failed to create request"))?;
-
-    let mut response = Fetch::Request(request)
-        .send()
+    let response = http
+        .get(&url, &headers)
         .await
         .map_err(|e| ApiError::upstream_error(format!("failed to call GitHub API: {}", e)))?;
 
-    match response.status_code() {
+    match response.status {
         200 => response
             .text()
-            .await
             .map_err(|e| ApiError::upstream_error(format!("failed to read response: {}", e))),
         404 => Err(ApiError::policy_not_found(format!(
             "file not found: {}/{}/{}",
@@ -92,12 +84,12 @@ pub async fn create_check_run(
     conclusion: &str,
     title: &str,
     summary: &str,
-    env: &Env,
+    http: &dyn HttpClient,
+    env: &dyn Environment,
 ) -> Result<()> {
     let config = Config::from_env(env)?;
 
-    // Get installation token
-    let installation_id = auth::get_installation_id(owner, &config).await?;
+    let installation_id = auth::get_installation_id(owner, &config, http, &WallClock).await?;
     let (token, _) = auth::create_installation_token(
         installation_id,
         &format!("{}/{}", owner, repo),
@@ -105,6 +97,8 @@ pub async fn create_check_run(
             .into_iter()
             .collect(),
         &config,
+        http,
+        &WallClock,
     )
     .await?;
 
@@ -121,39 +115,40 @@ pub async fn create_check_run(
         }
     });
 
-    let headers = Headers::new();
-    headers
-        .set("Authorization", &format!("Bearer {}", token))
-        .map_err(|_| ApiError::internal("failed to set headers"))?;
-    headers
-        .set("Accept", "application/vnd.github+json")
-        .map_err(|_| ApiError::internal("failed to set headers"))?;
-    headers
-        .set("User-Agent", "octo-sts-rust")
-        .map_err(|_| ApiError::internal("failed to set headers"))?;
-    headers
-        .set("X-GitHub-Api-Version", "2022-11-28")
-        .map_err(|_| ApiError::internal("failed to set headers"))?;
+    let auth_header = format!("Bearer {}", token);
+    let headers = [
+        ("Authorization", auth_header.as_str()),
+        ("Accept", "application/vnd.github+json"),
+        ("User-Agent", "octo-sts-rust"),
+        ("X-GitHub-Api-Version", "2022-11-28"),
+    ];
 
-    let mut init = RequestInit::new();
-    init.with_method(Method::Post)
-        .with_headers(headers)
-        .with_body(Some(body.to_string().into()));
-
-    let request =
-        Request::new_with_init(&url, &init).map_err(|_| ApiError::internal("failed to create request"))?;
-
-    let response = Fetch::Request(request)
-        .send()
+    let body_bytes = body.to_string().into_bytes();
+    let response = http
+        .post(&url, &headers, &body_bytes)
         .await
         .map_err(|e| ApiError::upstream_error(format!("failed to call GitHub API: {}", e)))?;
 
-    if response.status_code() != 201 {
+    if response.status != 201 {
         return Err(ApiError::upstream_error(format!(
             "failed to create check run: {}",
-            response.status_code()
+            response.status
         )));
     }
 
     Ok(())
+}
+
+/// Wall clock implementation for internal use in api.rs
+/// This is used when we need a clock for JWT generation but the caller
+/// doesn't pass one (e.g., webhook handlers, policy loading).
+struct WallClock;
+
+impl crate::platform::Clock for WallClock {
+    fn now_secs(&self) -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    }
 }

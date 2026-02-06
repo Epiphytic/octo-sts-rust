@@ -1,0 +1,38 @@
+[package]
+name = "octo-sts-gcp"
+version = "0.1.0"
+edition = "2021"
+authors = ["Epiphytic"]
+description = "GCP Cloud Functions adapter for octo-sts"
+license = "Apache-2.0"
+
+[[bin]]
+name = "octo-sts-gcp"
+path = "src/main.rs"
+
+[dependencies]
+octo-sts-core = { path = "../core" }
+
+# HTTP server (lightweight)
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio", "http1"] }
+http-body-util = "0.1"
+tokio = { version = "1", features = ["rt", "macros", "net"] }
+
+# HTTP client
+reqwest = { version = "0.12", default-features = false, features = [
+  "rustls-tls",
+] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Async
+async-trait = "0.1"
+
+# In-memory cache with TTL
+moka = { version = "0.12", features = ["future"] }
+
+# URL parsing
+url = "2"
