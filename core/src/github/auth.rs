@@ -309,4 +309,101 @@ pJz3IwKBgEbqya7GswZmYXsyXP1HZlMZk+emjUSjZukNTQkksut6fnEHt/6BIMpm
         assert_eq!(decoded.claims.iat, TEST_TIMESTAMP - 60);
         assert_eq!(decoded.claims.exp, TEST_TIMESTAMP + 600);
     }
+
+    /// Generate a fresh RSA key pair at runtime (never touches disk)
+    fn generate_rsa_keypair() -> (String, String) {
+        use rand::rngs::OsRng;
+        use rsa::pkcs1::{EncodeRsaPrivateKey, EncodeRsaPublicKey, LineEnding};
+        use rsa::RsaPrivateKey;
+
+        let private_key = RsaPrivateKey::new(&mut OsRng, 2048).expect("key generation failed");
+        let private_pem = private_key
+            .to_pkcs1_pem(LineEnding::LF)
+            .expect("private key PEM export failed")
+            .to_string();
+        let public_pem = private_key
+            .to_public_key()
+            .to_pkcs1_pem(LineEnding::LF)
+            .expect("public key PEM export failed");
+        (private_pem, public_pem)
+    }
+
+    #[tokio::test]
+    async fn test_generated_key_signs_valid_jwt() {
+        let (private_pem, _public_pem) = generate_rsa_keypair();
+
+        let signer = PemJwtSigner {
+            app_id: "99999".to_string(),
+            pem_key: private_pem,
+        };
+
+        let jwt = signer
+            .sign_app_jwt(TEST_TIMESTAMP)
+            .await
+            .expect("signing with generated key should succeed");
+
+        let parts: Vec<&str> = jwt.split('.').collect();
+        assert_eq!(parts.len(), 3, "JWT should have 3 parts");
+    }
+
+    #[tokio::test]
+    async fn test_generated_key_jwt_verifies_with_public_key() {
+        use surrealdb_jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
+
+        let (private_pem, public_pem) = generate_rsa_keypair();
+
+        let signer = PemJwtSigner {
+            app_id: "42".to_string(),
+            pem_key: private_pem,
+        };
+
+        let jwt = signer
+            .sign_app_jwt(TEST_TIMESTAMP)
+            .await
+            .expect("signing should succeed");
+
+        // Verify with the matching public key (full cryptographic verification)
+        let decoding_key = DecodingKey::from_rsa_pem(public_pem.as_bytes())
+            .expect("public key should be valid");
+
+        let mut validation = Validation::new(Algorithm::RS256);
+        validation.validate_exp = false;
+        validation.set_required_spec_claims::<&str>(&[]);
+
+        let decoded = decode::<AppJwtClaims>(&jwt, &decoding_key, &validation)
+            .expect("JWT signature should verify with matching public key");
+
+        assert_eq!(decoded.claims.iss, "42");
+        assert_eq!(decoded.claims.iat, TEST_TIMESTAMP - 60);
+        assert_eq!(decoded.claims.exp, TEST_TIMESTAMP + 600);
+    }
+
+    #[tokio::test]
+    async fn test_generated_key_jwt_fails_with_wrong_public_key() {
+        use surrealdb_jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
+
+        let (private_pem, _) = generate_rsa_keypair();
+        let (_, wrong_public_pem) = generate_rsa_keypair();
+
+        let signer = PemJwtSigner {
+            app_id: "42".to_string(),
+            pem_key: private_pem,
+        };
+
+        let jwt = signer
+            .sign_app_jwt(TEST_TIMESTAMP)
+            .await
+            .expect("signing should succeed");
+
+        // Verification with a different key pair should fail
+        let wrong_key = DecodingKey::from_rsa_pem(wrong_public_pem.as_bytes())
+            .expect("public key should be valid");
+
+        let mut validation = Validation::new(Algorithm::RS256);
+        validation.validate_exp = false;
+        validation.set_required_spec_claims::<&str>(&[]);
+
+        let result = decode::<AppJwtClaims>(&jwt, &wrong_key, &validation);
+        assert!(result.is_err(), "JWT should NOT verify with wrong public key");
+    }
 }
