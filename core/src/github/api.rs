@@ -22,7 +22,7 @@ pub async fn get_file_content(
     let installation_id = auth::get_installation_id(owner, signer, http, clock).await?;
     let (token, _) = auth::create_installation_token(
         installation_id,
-        &format!("{}/{}", owner, repo),
+        &[repo.to_string()],
         &[("contents".to_string(), "read".to_string())]
             .into_iter()
             .collect(),
@@ -84,7 +84,7 @@ pub async fn create_check_run(
     let installation_id = auth::get_installation_id(owner, signer, http, clock).await?;
     let (token, _) = auth::create_installation_token(
         installation_id,
-        &format!("{}/{}", owner, repo),
+        &[repo.to_string()],
         &[("checks".to_string(), "write".to_string())]
             .into_iter()
             .collect(),

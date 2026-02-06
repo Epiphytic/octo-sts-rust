@@ -57,9 +57,12 @@ impl JwtSigner for PemJwtSigner {
 }
 
 /// Create a GitHub installation token with scoped permissions
+///
+/// If `repositories` is non-empty, the token is restricted to those repos.
+/// If empty, the token has access to all repos the installation can access.
 pub async fn create_installation_token(
     installation_id: u64,
-    scope: &str,
+    repositories: &[String],
     permissions: &HashMap<String, String>,
     signer: &dyn JwtSigner,
     http: &dyn HttpClient,
@@ -67,15 +70,16 @@ pub async fn create_installation_token(
 ) -> Result<(String, String)> {
     let app_jwt = signer.sign_app_jwt(clock.now_secs() as i64).await?;
 
-    let repo = scope
-        .split('/')
-        .nth(1)
-        .ok_or_else(|| ApiError::invalid_request("invalid scope format"))?;
-
-    let body = serde_json::json!({
-        "repositories": [repo],
-        "permissions": permissions
-    });
+    let body = if repositories.is_empty() {
+        serde_json::json!({
+            "permissions": permissions
+        })
+    } else {
+        serde_json::json!({
+            "repositories": repositories,
+            "permissions": permissions
+        })
+    };
 
     let url = format!(
         "{}/app/installations/{}/access_tokens",

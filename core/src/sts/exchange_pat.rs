@@ -86,9 +86,15 @@ pub async fn handle(
     let installation_id = get_or_fetch_installation(owner, cache, http, signer, clock).await?;
 
     // 6. Generate GitHub installation token with policy permissions
+    let token_repos = if policy.repositories.is_empty() {
+        vec![requested_repo.to_string()]
+    } else {
+        policy.repositories.clone()
+    };
+
     let (token, expires_at) = auth::create_installation_token(
         installation_id,
-        &request.scope,
+        &token_repos,
         &policy.permissions,
         signer,
         http,

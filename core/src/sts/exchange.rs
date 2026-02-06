@@ -43,24 +43,40 @@ pub async fn handle(
     // 2. Load trust policy (with caching)
     let compiled_policy = policy::load(&request.scope, &request.identity, cache, http, signer, clock).await?;
 
-    // 3. Extract target repo from scope for repository validation
+    // 3. Extract owner and repo from scope
     let parts: Vec<&str> = request.scope.split('/').collect();
     if parts.len() != 2 {
         return Err(ApiError::invalid_request("scope must be in format owner/repo"));
     }
     let owner = parts[0];
-    let target_repo = parts[1];
+    let scope_repo = parts[1];
+    let is_org_policy = scope_repo == ".github";
 
-    // 4. Check token against policy (including repository restrictions)
-    policy::check_token_with_repo(&claims, &compiled_policy, &config.domain, Some(target_repo))?;
+    // 4. Check token against policy
+    // For org-level policies (scope owner/.github), skip repository check — .github
+    // is the policy source, not a target repo. The actual target repos are in the policy.
+    // For repo-level policies, validate the target repo against the policy's repository list.
+    if is_org_policy {
+        policy::check_token(&claims, &compiled_policy, &config.domain)?;
+    } else {
+        policy::check_token_with_repo(&claims, &compiled_policy, &config.domain, Some(scope_repo))?;
+    }
 
     // 5. Get installation ID (with caching)
     let installation_id = get_or_fetch_installation(owner, cache, http, signer, clock).await?;
 
     // 6. Generate GitHub installation token
+    // For org-level policies, use the policy's repository list.
+    // For repo-level policies, scope to the requested repo.
+    let token_repos = if is_org_policy {
+        compiled_policy.repositories.clone()
+    } else {
+        vec![scope_repo.to_string()]
+    };
+
     let (token, expires_at) = github::auth::create_installation_token(
         installation_id,
-        &request.scope,
+        &token_repos,
         &compiled_policy.permissions,
         signer,
         http,
