@@ -2,9 +2,8 @@
 //!
 //! Fetches content from GitHub repositories.
 
-use crate::config::Config;
 use crate::error::{ApiError, Result};
-use crate::platform::{Environment, HttpClient};
+use crate::platform::{HttpClient, JwtSigner};
 
 use super::auth;
 
@@ -17,23 +16,16 @@ pub async fn get_file_content(
     path: &str,
     git_ref: Option<&str>,
     http: &dyn HttpClient,
-    env: &dyn Environment,
+    signer: &dyn JwtSigner,
 ) -> Result<String> {
-    let config = Config::from_env(env)?;
-
-    // For get_file_content we need a clock - use a simple wall clock approach
-    // The caller provides http and env; we create a temporary clock for JWT generation
-    // Note: This function is called in contexts where we don't have a Clock reference.
-    // We accept this coupling because the JWT expiry is 10 minutes, so minor clock
-    // differences don't matter for fetching policy files.
-    let installation_id = auth::get_installation_id(owner, &config, http, &WallClock).await?;
+    let installation_id = auth::get_installation_id(owner, signer, http, &WallClock).await?;
     let (token, _) = auth::create_installation_token(
         installation_id,
         &format!("{}/{}", owner, repo),
         &[("contents".to_string(), "read".to_string())]
             .into_iter()
             .collect(),
-        &config,
+        signer,
         http,
         &WallClock,
     )
@@ -85,18 +77,16 @@ pub async fn create_check_run(
     title: &str,
     summary: &str,
     http: &dyn HttpClient,
-    env: &dyn Environment,
+    signer: &dyn JwtSigner,
 ) -> Result<()> {
-    let config = Config::from_env(env)?;
-
-    let installation_id = auth::get_installation_id(owner, &config, http, &WallClock).await?;
+    let installation_id = auth::get_installation_id(owner, signer, http, &WallClock).await?;
     let (token, _) = auth::create_installation_token(
         installation_id,
         &format!("{}/{}", owner, repo),
         &[("checks".to_string(), "write".to_string())]
             .into_iter()
             .collect(),
-        &config,
+        signer,
         http,
         &WallClock,
     )

@@ -13,7 +13,7 @@ pub use types::{CompiledPolicy, OrgTrustPolicy, TrustPolicy};
 use crate::config::POLICY_CACHE_TTL_SECS;
 use crate::error::{ApiError, Result};
 use crate::github;
-use crate::platform::{cache_get, cache_put, Cache, Environment, HttpClient};
+use crate::platform::{cache_get, cache_put, Cache, HttpClient, JwtSigner};
 
 /// Validate identity parameter to prevent path traversal attacks.
 /// Identity must contain only alphanumeric characters, hyphens, and underscores.
@@ -54,7 +54,7 @@ pub async fn load(
     identity: &str,
     cache: &dyn Cache,
     http: &dyn HttpClient,
-    env: &dyn Environment,
+    signer: &dyn JwtSigner,
 ) -> Result<CompiledPolicy> {
     // Validate identity to prevent path traversal
     validate_identity(identity)?;
@@ -79,7 +79,7 @@ pub async fn load(
 
     // Fetch from GitHub
     let path = format!(".github/chainguard/{}.sts.yaml", identity);
-    let yaml_content = github::api::get_file_content(owner, repo, &path, None, http, env).await?;
+    let yaml_content = github::api::get_file_content(owner, repo, &path, None, http, signer).await?;
 
     // Parse and compile
     let is_org_policy = repo == ".github";

@@ -11,10 +11,14 @@ use hyper::{Method, Request, Response, StatusCode};
 use std::sync::Arc;
 
 use octo_sts_core::error::{ApiError, ErrorResponse};
+use octo_sts_core::github::auth::PemJwtSigner;
+use octo_sts_core::platform::JwtSigner;
 use octo_sts_core::sts;
 
+mod kms;
 mod platform;
 
+use kms::KmsJwtSigner;
 use platform::{GcpEnv, MokaCache, ReqwestHttpClient, SystemClock};
 
 /// Shared application state
@@ -23,6 +27,7 @@ struct AppState {
     http: ReqwestHttpClient,
     clock: SystemClock,
     env: GcpEnv,
+    signer: Box<dyn JwtSigner>,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -34,11 +39,33 @@ async fn main() {
 
     let project_id = GcpEnv::detect_project_id().unwrap_or_else(|_| "unknown".into());
 
+    // Detect signer mode: KMS if KMS_KEY_NAME is set, else PEM
+    let signer: Box<dyn JwtSigner> = if let Ok(kms_key_name) = std::env::var("KMS_KEY_NAME") {
+        let app_id = std::env::var("GITHUB_APP_ID")
+            .expect("GITHUB_APP_ID must be set when using KMS signing");
+        eprintln!(
+            "octo-sts-gcp: using KMS signer (key: {})",
+            kms_key_name
+        );
+        Box::new(KmsJwtSigner::new(app_id, kms_key_name))
+    } else {
+        let app_id = std::env::var("GITHUB_APP_ID")
+            .expect("GITHUB_APP_ID must be set");
+        let pem_key = std::env::var("GITHUB_APP_PRIVATE_KEY")
+            .expect("GITHUB_APP_PRIVATE_KEY must be set when not using KMS");
+        eprintln!("octo-sts-gcp: using PEM signer");
+        Box::new(PemJwtSigner {
+            app_id,
+            pem_key,
+        })
+    };
+
     let state = Arc::new(AppState {
         cache: MokaCache::new(),
         http: ReqwestHttpClient::new(),
         clock: SystemClock,
         env: GcpEnv::new(project_id),
+        signer,
     });
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port))
@@ -117,8 +144,15 @@ async fn handle_exchange(req: Request<Incoming>, state: &AppState) -> HyperRespo
         bearer_token,
     };
 
-    match sts::exchange::handle(request, &state.cache, &state.http, &state.env, &state.clock)
-        .await
+    match sts::exchange::handle(
+        request,
+        &state.cache,
+        &state.http,
+        &state.env,
+        &state.clock,
+        state.signer.as_ref(),
+    )
+    .await
     {
         Ok(response) => json_response(StatusCode::OK, &response),
         Err(e) => error_response(&e),
@@ -143,8 +177,14 @@ async fn handle_exchange_pat(req: Request<Incoming>, state: &AppState) -> HyperR
         bearer_token,
     };
 
-    match sts::exchange_pat::handle(request, &state.cache, &state.http, &state.env, &state.clock)
-        .await
+    match sts::exchange_pat::handle(
+        request,
+        &state.cache,
+        &state.http,
+        &state.clock,
+        state.signer.as_ref(),
+    )
+    .await
     {
         Ok(response) => json_response(StatusCode::OK, &response),
         Err(e) => error_response(&e),
@@ -192,6 +232,7 @@ async fn handle_webhook(req: Request<Incoming>, state: &AppState) -> HyperRespon
         &event_type,
         &state.http,
         &state.env,
+        state.signer.as_ref(),
     )
     .await
     {
