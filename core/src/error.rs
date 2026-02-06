@@ -1,8 +1,10 @@
-//! Error types and HTTP response mapping
+//! Error types for the STS service
+//!
+//! Platform-agnostic error types with HTTP status code mapping.
+//! Each platform adapter is responsible for converting these to HTTP responses.
 
 use serde::Serialize;
 use thiserror::Error;
-use worker::Response;
 
 /// Result type alias for API operations
 pub type Result<T> = std::result::Result<T, ApiError>;
@@ -116,22 +118,20 @@ impl ApiError {
             Self::UpstreamTimeout => "upstream_timeout",
         }
     }
-
-    /// Convert to HTTP response
-    pub fn into_response(self) -> worker::Result<Response> {
-        let status = self.status_code();
-        let body = ErrorResponse {
-            error: self.error_key().to_string(),
-            message: self.to_string(),
-        };
-
-        Response::from_json(&body).map(|r| r.with_status(status))
-    }
 }
 
-/// Error response body
+/// Error response body (for platform adapters to serialize)
 #[derive(Serialize)]
-struct ErrorResponse {
-    error: String,
-    message: String,
+pub struct ErrorResponse {
+    pub error: String,
+    pub message: String,
+}
+
+impl From<&ApiError> for ErrorResponse {
+    fn from(err: &ApiError) -> Self {
+        Self {
+            error: err.error_key().to_string(),
+            message: err.to_string(),
+        }
+    }
 }

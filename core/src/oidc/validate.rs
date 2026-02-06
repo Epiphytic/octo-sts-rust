@@ -5,11 +5,11 @@
 use surrealdb_jsonwebtoken::{decode, decode_header, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use worker::Env;
 
 use super::discovery::fetch_discovery;
 use super::jwks::fetch_jwks;
 use crate::error::{ApiError, Result};
+use crate::platform::{Clock, HttpClient};
 
 /// OIDC token claims
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,7 +78,7 @@ where
 }
 
 /// Validate an OIDC token and return its claims
-pub async fn validate_token(token: &str, _env: &Env) -> Result<OidcClaims> {
+pub async fn validate_token(token: &str, http: &dyn HttpClient, clock: &dyn Clock) -> Result<OidcClaims> {
     // Decode header to get key ID and algorithm
     let header = decode_header(token)
         .map_err(|e| ApiError::invalid_token(format!("invalid JWT header: {}", e)))?;
@@ -98,10 +98,10 @@ pub async fn validate_token(token: &str, _env: &Env) -> Result<OidcClaims> {
     }
 
     // Fetch discovery document
-    let discovery = fetch_discovery(&claims_preview.iss).await?;
+    let discovery = fetch_discovery(&claims_preview.iss, http).await?;
 
     // Fetch JWKS
-    let jwks = fetch_jwks(&discovery.jwks_uri).await?;
+    let jwks = fetch_jwks(&discovery.jwks_uri, http).await?;
 
     // Find the key
     let kid = header.kid.as_ref().ok_or_else(|| {
@@ -122,16 +122,14 @@ pub async fn validate_token(token: &str, _env: &Env) -> Result<OidcClaims> {
     let mut validation = Validation::new(header.alg);
     validation.validate_exp = false;
     validation.validate_nbf = false;
-    // Don't set audience - leaving aud as None skips audience validation
-    // We validate audience in policy check instead
     validation.set_issuer(&[&claims_preview.iss]);
 
     // Decode and verify signature
     let token_data = decode::<OidcClaims>(token, &decoding_key, &validation)
         .map_err(|e| ApiError::token_verification_failed(format!("token verification failed: {}", e)))?;
 
-    // Manually validate time-based claims using js_sys::Date (WASM-compatible)
-    let now_secs = (js_sys::Date::now() / 1000.0) as u64;
+    // Manually validate time-based claims using platform clock
+    let now_secs = clock.now_secs() as u64;
 
     // Validate expiration (exp)
     if token_data.claims.exp <= now_secs {
@@ -140,7 +138,6 @@ pub async fn validate_token(token: &str, _env: &Env) -> Result<OidcClaims> {
 
     // Validate not-before (nbf) if present
     if let Some(nbf) = token_data.claims.nbf {
-        // Allow 60 seconds of clock skew
         if nbf > now_secs + 60 {
             return Err(ApiError::invalid_token("token is not yet valid (nbf claim)"));
         }
@@ -149,18 +146,15 @@ pub async fn validate_token(token: &str, _env: &Env) -> Result<OidcClaims> {
     // Validate issued-at (iat) - sanity checks
     let iat = token_data.claims.iat;
 
-    // Token should not be issued more than 60 seconds in the future (clock skew)
     if iat > now_secs + 60 {
         return Err(ApiError::invalid_token("token issued in the future (iat claim)"));
     }
 
-    // Token should not be older than 24 hours (reasonable limit for OIDC tokens)
-    let max_age_secs = 24 * 60 * 60; // 24 hours
+    let max_age_secs = 24 * 60 * 60;
     if iat + max_age_secs < now_secs {
         return Err(ApiError::invalid_token("token is too old (iat claim)"));
     }
 
-    // Ensure iat is before exp (sanity check)
     if iat >= token_data.claims.exp {
         return Err(ApiError::invalid_token("invalid token: iat >= exp"));
     }
@@ -189,7 +183,6 @@ fn base64_url_decode(input: &str) -> Result<Vec<u8>> {
     URL_SAFE_NO_PAD
         .decode(input)
         .or_else(|_| {
-            // Try with padding
             use base64::engine::general_purpose::URL_SAFE;
             URL_SAFE.decode(input)
         })
@@ -206,7 +199,6 @@ fn validate_issuer(issuer: &str) -> Result<()> {
         return Err(ApiError::invalid_token("issuer too long"));
     }
 
-    // Check for dangerous characters
     for c in issuer.chars() {
         if c.is_control() {
             return Err(ApiError::invalid_token("issuer contains control characters"));
@@ -226,7 +218,6 @@ fn validate_subject(subject: &str) -> Result<()> {
         return Err(ApiError::invalid_token("subject too long"));
     }
 
-    // Check for dangerous characters
     let dangerous_chars = ['<', '>', '"', '\'', '\\', '`', '|', '&'];
     for c in subject.chars() {
         if c.is_control() || c.is_whitespace() {
@@ -250,7 +241,6 @@ fn validate_audience(audience: &str) -> Result<()> {
         return Err(ApiError::invalid_token("audience too long"));
     }
 
-    // Check for dangerous characters
     let dangerous_chars = ['"', '\'', '`', '|', '&', '[', ']'];
     for c in audience.chars() {
         if c.is_control() || c.is_whitespace() {

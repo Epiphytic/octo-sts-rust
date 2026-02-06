@@ -1,8 +1,7 @@
 //! Configuration and secrets management
 
-use worker::Env;
-
 use crate::error::{ApiError, Result};
+use crate::platform::Environment;
 
 /// Application configuration loaded from environment
 pub struct Config {
@@ -17,31 +16,24 @@ pub struct Config {
 }
 
 impl Config {
-    /// Load configuration from Worker environment
-    pub fn from_env(env: &Env) -> Result<Self> {
+    /// Load configuration from platform environment
+    pub fn from_env(env: &dyn Environment) -> Result<Self> {
         Ok(Self {
             domain: env
-                .var("DOMAIN")
-                .map_err(|_| ApiError::internal("DOMAIN not configured"))?
-                .to_string(),
+                .get_var("DOMAIN")
+                .map_err(|_| ApiError::internal("DOMAIN not configured"))?,
             github_app_id: env
-                .secret("GITHUB_APP_ID")
-                .map_err(|_| ApiError::internal("GITHUB_APP_ID secret not set"))?
-                .to_string(),
+                .get_secret("GITHUB_APP_ID")
+                .map_err(|_| ApiError::internal("GITHUB_APP_ID secret not set"))?,
             github_app_private_key: env
-                .secret("GITHUB_APP_PRIVATE_KEY")
-                .map_err(|_| ApiError::internal("GITHUB_APP_PRIVATE_KEY secret not set"))?
-                .to_string(),
+                .get_secret("GITHUB_APP_PRIVATE_KEY")
+                .map_err(|_| ApiError::internal("GITHUB_APP_PRIVATE_KEY secret not set"))?,
             github_webhook_secret: env
-                .secret("GITHUB_WEBHOOK_SECRET")
-                .map_err(|_| ApiError::internal("GITHUB_WEBHOOK_SECRET secret not set"))?
-                .to_string(),
+                .get_secret("GITHUB_WEBHOOK_SECRET")
+                .map_err(|_| ApiError::internal("GITHUB_WEBHOOK_SECRET secret not set"))?,
         })
     }
 }
-
-/// KV namespace binding name
-pub const KV_BINDING: &str = "OCTO_STS_KV";
 
 /// Cache TTL for installation IDs (1 hour)
 pub const INSTALL_CACHE_TTL_SECS: u64 = 3600;

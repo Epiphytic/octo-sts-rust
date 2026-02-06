@@ -18,19 +18,11 @@ pub fn check_token_with_repo(
     domain: &str,
     target_repo: Option<&str>,
 ) -> Result<()> {
-    // Check issuer
     check_issuer(claims, policy)?;
-
-    // Check subject
     check_subject(claims, policy)?;
-
-    // Check audience
     check_audience(claims, policy, domain)?;
-
-    // Check custom claims
     check_custom_claims(claims, policy)?;
 
-    // Check repository access (for org policies with repository restrictions)
     if let Some(repo) = target_repo {
         check_repository_access(policy, repo)?;
     }
@@ -39,12 +31,10 @@ pub fn check_token_with_repo(
 }
 
 fn check_repository_access(policy: &CompiledPolicy, target_repo: &str) -> Result<()> {
-    // If repositories list is empty, all repos are allowed
     if policy.repositories.is_empty() {
         return Ok(());
     }
 
-    // Check if the target repo is in the allowed list (case-insensitive)
     let is_allowed = policy
         .repositories
         .iter()
@@ -99,23 +89,19 @@ fn check_subject(claims: &OidcClaims, policy: &CompiledPolicy) -> Result<()> {
 }
 
 fn check_audience(claims: &OidcClaims, policy: &CompiledPolicy, domain: &str) -> Result<()> {
-    // If no audience specified in policy, default to domain
     let expected_audience = policy
         .audience
         .as_ref()
         .map(|s| s.as_str())
         .unwrap_or(domain);
 
-    // Check if any audience in the token matches
     let audiences = &claims.aud;
 
     if let Some(ref regex) = policy.audience_regex {
-        // Pattern matching: any audience must match
         if !audiences.iter().any(|a| regex.is_match(a)) {
             return Err(ApiError::permission_denied("no audience matches pattern"));
         }
     } else {
-        // Exact matching: any audience must match expected
         if !audiences.iter().any(|a| a == expected_audience) {
             return Err(ApiError::permission_denied(format!(
                 "audience mismatch: expected '{}', got {:?}",
@@ -133,7 +119,6 @@ fn check_custom_claims(claims: &OidcClaims, policy: &CompiledPolicy) -> Result<(
             ApiError::permission_denied(format!("missing required claim: {}", claim_name))
         })?;
 
-        // Convert booleans to strings
         let value_str = match claim_value {
             serde_json::Value::Bool(b) => b.to_string(),
             serde_json::Value::String(s) => s.clone(),
@@ -225,7 +210,6 @@ mod tests {
 
         assert!(check_issuer(&claims, &policy).is_ok());
 
-        // Non-matching issuer
         let claims_bad = make_claims("https://other.com", "sub", vec!["aud"]);
         assert!(check_issuer(&claims_bad, &policy).is_err());
     }
@@ -254,7 +238,6 @@ mod tests {
 
         assert!(check_subject(&claims, &policy).is_ok());
 
-        // Non-matching subject
         let claims_bad = make_claims(
             "https://example.com",
             "repo:other/repo:ref:main",
@@ -271,7 +254,6 @@ mod tests {
 
         assert!(check_audience(&claims, &policy, "default.com").is_ok());
 
-        // Wrong audience
         let claims_bad = make_claims("https://example.com", "sub", vec!["wrong-audience"]);
         assert!(check_audience(&claims_bad, &policy, "default.com").is_err());
     }
@@ -279,11 +261,10 @@ mod tests {
     #[test]
     fn test_check_audience_defaults_to_domain() {
         let claims = make_claims("https://example.com", "sub", vec!["my-domain.com"]);
-        let policy = make_policy(); // No audience set
+        let policy = make_policy();
 
         assert!(check_audience(&claims, &policy, "my-domain.com").is_ok());
 
-        // Wrong audience when expecting domain
         let claims_bad = make_claims("https://example.com", "sub", vec!["wrong-domain.com"]);
         assert!(check_audience(&claims_bad, &policy, "my-domain.com").is_err());
     }
@@ -300,7 +281,6 @@ mod tests {
 
         assert!(check_audience(&claims, &policy, "default.com").is_ok());
 
-        // Non-matching audience pattern
         let claims_bad = make_claims(
             "https://example.com",
             "sub",
@@ -319,7 +299,6 @@ mod tests {
         let mut policy = make_policy();
         policy.audience = Some("my-audience".to_string());
 
-        // Should match because "my-audience" is in the list
         assert!(check_audience(&claims, &policy, "default.com").is_ok());
     }
 
@@ -356,7 +335,6 @@ mod tests {
 
         assert!(check_custom_claims(&claims, &policy).is_ok());
 
-        // Test false
         let custom_false = [("is_verified".to_string(), serde_json::json!(false))]
             .into_iter()
             .collect();
@@ -450,7 +428,7 @@ mod tests {
 
     #[test]
     fn test_check_repository_access_empty_list_allows_all() {
-        let policy = make_policy(); // Empty repositories list
+        let policy = make_policy();
 
         assert!(check_repository_access(&policy, "any-repo").is_ok());
         assert!(check_repository_access(&policy, ".github").is_ok());
@@ -463,7 +441,6 @@ mod tests {
 
         assert!(check_repository_access(&policy, "repo-a").is_ok());
         assert!(check_repository_access(&policy, "repo-b").is_ok());
-        // Case-insensitive
         assert!(check_repository_access(&policy, "REPO-A").is_ok());
     }
 
@@ -483,12 +460,10 @@ mod tests {
         let mut policy = make_policy();
         policy.repositories = vec!["allowed-repo".to_string()];
 
-        // Should pass with allowed repo
         assert!(
             check_token_with_repo(&claims, &policy, "my-domain.com", Some("allowed-repo")).is_ok()
         );
 
-        // Should fail with disallowed repo
         let result = check_token_with_repo(&claims, &policy, "my-domain.com", Some("other-repo"));
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not allowed"));

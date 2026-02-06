@@ -4,10 +4,10 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use worker::{Fetch, Headers, Method, Request, RequestInit};
 
 use crate::config::Config;
 use crate::error::{ApiError, Result};
+use crate::platform::{Clock, HttpClient};
 
 const GITHUB_API_BASE: &str = "https://api.github.com";
 
@@ -32,93 +32,66 @@ pub async fn create_installation_token(
     scope: &str,
     permissions: &HashMap<String, String>,
     config: &Config,
+    http: &dyn HttpClient,
+    clock: &dyn Clock,
 ) -> Result<(String, String)> {
-    // Generate App JWT for authentication
-    let app_jwt = generate_app_jwt(config)?;
+    let app_jwt = generate_app_jwt(config, clock)?;
 
-    // Extract repo name from scope (owner/repo -> repo)
     let repo = scope
         .split('/')
         .nth(1)
         .ok_or_else(|| ApiError::invalid_request("invalid scope format"))?;
 
-    // Build request body
     let body = serde_json::json!({
         "repositories": [repo],
         "permissions": permissions
     });
 
-    // Make request to GitHub
     let url = format!(
         "{}/app/installations/{}/access_tokens",
         GITHUB_API_BASE, installation_id
     );
 
-    let headers = Headers::new();
-    headers
-        .set("Authorization", &format!("Bearer {}", app_jwt))
-        .map_err(|_| ApiError::internal("failed to set headers"))?;
-    headers
-        .set("Accept", "application/vnd.github+json")
-        .map_err(|_| ApiError::internal("failed to set headers"))?;
-    headers
-        .set("User-Agent", "octo-sts-rust")
-        .map_err(|_| ApiError::internal("failed to set headers"))?;
-    headers
-        .set("X-GitHub-Api-Version", "2022-11-28")
-        .map_err(|_| ApiError::internal("failed to set headers"))?;
+    let auth_header = format!("Bearer {}", app_jwt);
+    let headers = [
+        ("Authorization", auth_header.as_str()),
+        ("Accept", "application/vnd.github+json"),
+        ("User-Agent", "octo-sts-rust"),
+        ("X-GitHub-Api-Version", "2022-11-28"),
+    ];
 
-    let mut init = RequestInit::new();
-    init.with_method(Method::Post)
-        .with_headers(headers)
-        .with_body(Some(body.to_string().into()));
-
-    let request =
-        Request::new_with_init(&url, &init).map_err(|_| ApiError::internal("failed to create request"))?;
-
-    let mut response = Fetch::Request(request)
-        .send()
+    let body_bytes = body.to_string().into_bytes();
+    let response = http
+        .post(&url, &headers, &body_bytes)
         .await
         .map_err(|e| ApiError::upstream_error(format!("failed to call GitHub API: {}", e)))?;
 
-    if response.status_code() != 201 {
-        let error_body = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "unknown error".to_string());
+    if response.status != 201 {
+        let error_body = response.text().unwrap_or_else(|_| "unknown error".to_string());
         return Err(ApiError::upstream_error(format!(
             "GitHub API error ({}): {}",
-            response.status_code(),
-            error_body
+            response.status, error_body
         )));
     }
 
     let token_response: InstallationTokenResponse = response
         .json()
-        .await
         .map_err(|e| ApiError::upstream_error(format!("failed to parse response: {}", e)))?;
 
     Ok((token_response.token, token_response.expires_at))
 }
 
 /// Generate a GitHub App JWT for API authentication
-fn generate_app_jwt(config: &Config) -> Result<String> {
-    // Use jsonwebtoken crate for proper RS256 signing
-    generate_app_jwt_with_jsonwebtoken(config)
-}
-
-/// Generate a GitHub App JWT for API authentication using jsonwebtoken
-fn generate_app_jwt_with_jsonwebtoken(config: &Config) -> Result<String> {
-    generate_app_jwt_with_timestamp(config, chrono_lite_now())
+fn generate_app_jwt(config: &Config, clock: &dyn Clock) -> Result<String> {
+    generate_app_jwt_with_timestamp(config, clock.now_secs() as i64)
 }
 
 /// Generate a GitHub App JWT with a specific timestamp (for testing)
 fn generate_app_jwt_with_timestamp(config: &Config, now: i64) -> Result<String> {
     use surrealdb_jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 
-    // Apply clock skew buffer
-    let iat = now - 60; // 60 second buffer for clock skew
-    let exp = now + 600; // 10 minute expiry (GitHub maximum)
+    let iat = now - 60;
+    let exp = now + 600;
 
     let claims = AppJwtClaims {
         iat,
@@ -126,7 +99,6 @@ fn generate_app_jwt_with_timestamp(config: &Config, now: i64) -> Result<String> 
         iss: config.github_app_id.clone(),
     };
 
-    // Parse the PEM key - handle both PKCS#1 and PKCS#8 formats
     let key = EncodingKey::from_rsa_pem(config.github_app_private_key.as_bytes())
         .map_err(|e| ApiError::internal(format!("invalid private key: {}", e)))?;
 
@@ -136,79 +108,48 @@ fn generate_app_jwt_with_timestamp(config: &Config, now: i64) -> Result<String> 
         .map_err(|e| ApiError::internal(format!("failed to encode JWT: {}", e)))
 }
 
-/// Get current Unix timestamp (seconds)
-///
-/// In WASM, we use js_sys::Date
-fn chrono_lite_now() -> i64 {
-    // js_sys::Date::now() returns milliseconds
-    (js_sys::Date::now() / 1000.0) as i64
-}
-
 /// Get installation ID for an owner
-pub async fn get_installation_id(owner: &str, config: &Config) -> Result<u64> {
-    let app_jwt = generate_app_jwt(config)?;
+pub async fn get_installation_id(
+    owner: &str,
+    config: &Config,
+    http: &dyn HttpClient,
+    clock: &dyn Clock,
+) -> Result<u64> {
+    let app_jwt = generate_app_jwt(config, clock)?;
 
     let url = format!("{}/orgs/{}/installation", GITHUB_API_BASE, owner);
+    let auth_header = format!("Bearer {}", app_jwt);
+    let headers = [
+        ("Authorization", auth_header.as_str()),
+        ("Accept", "application/vnd.github+json"),
+        ("User-Agent", "octo-sts-rust"),
+    ];
 
-    let headers = Headers::new();
-    headers
-        .set("Authorization", &format!("Bearer {}", app_jwt))
-        .map_err(|_| ApiError::internal("failed to set headers"))?;
-    headers
-        .set("Accept", "application/vnd.github+json")
-        .map_err(|_| ApiError::internal("failed to set headers"))?;
-    headers
-        .set("User-Agent", "octo-sts-rust")
-        .map_err(|_| ApiError::internal("failed to set headers"))?;
-
-    let mut init = RequestInit::new();
-    init.with_method(Method::Get).with_headers(headers);
-
-    let request =
-        Request::new_with_init(&url, &init).map_err(|_| ApiError::internal("failed to create request"))?;
-
-    let mut response = Fetch::Request(request)
-        .send()
+    let mut response = http
+        .get(&url, &headers)
         .await
         .map_err(|e| ApiError::upstream_error(format!("failed to call GitHub API: {}", e)))?;
 
     // Try org endpoint first, fall back to user endpoint
-    if response.status_code() == 404 {
+    if response.status == 404 {
         let url = format!("{}/users/{}/installation", GITHUB_API_BASE, owner);
-        let headers = Headers::new();
-        headers
-            .set("Authorization", &format!("Bearer {}", app_jwt))
-            .map_err(|_| ApiError::internal("failed to set headers"))?;
-        headers
-            .set("Accept", "application/vnd.github+json")
-            .map_err(|_| ApiError::internal("failed to set headers"))?;
-        headers
-            .set("User-Agent", "octo-sts-rust")
-            .map_err(|_| ApiError::internal("failed to set headers"))?;
-
-        let mut init = RequestInit::new();
-        init.with_method(Method::Get).with_headers(headers);
-
-        let request = Request::new_with_init(&url, &init)
-            .map_err(|_| ApiError::internal("failed to create request"))?;
-
-        response = Fetch::Request(request)
-            .send()
+        response = http
+            .get(&url, &headers)
             .await
             .map_err(|e| ApiError::upstream_error(format!("failed to call GitHub API: {}", e)))?;
     }
 
-    if response.status_code() == 404 {
+    if response.status == 404 {
         return Err(ApiError::installation_not_found(format!(
             "GitHub App not installed for '{}'",
             owner
         )));
     }
 
-    if response.status_code() != 200 {
+    if response.status != 200 {
         return Err(ApiError::upstream_error(format!(
             "GitHub API error: {}",
-            response.status_code()
+            response.status
         )));
     }
 
@@ -219,7 +160,6 @@ pub async fn get_installation_id(owner: &str, config: &Config) -> Result<u64> {
 
     let installation: InstallationResponse = response
         .json()
-        .await
         .map_err(|e| ApiError::upstream_error(format!("failed to parse response: {}", e)))?;
 
     Ok(installation.id)
@@ -229,8 +169,6 @@ pub async fn get_installation_id(owner: &str, config: &Config) -> Result<u64> {
 mod tests {
     use super::*;
 
-    // Test RSA private key for testing (DO NOT USE IN PRODUCTION)
-    // Generated specifically for tests
     const TEST_PRIVATE_KEY: &str = r#"-----BEGIN RSA PRIVATE KEY-----
 MIIEowIBAAKCAQEA6MrBHOiK5PRe62kAoMcZ5Gs2H2HndnzFnRlVYVfWAIByrS9Z
 DugSGRFleHtoG7a2e4bM5wrmzR72ov/+VADXENi/uxYZML5TtYD0YLnDCHXoT3tO
@@ -259,8 +197,7 @@ pJz3IwKBgEbqya7GswZmYXsyXP1HZlMZk+emjUSjZukNTQkksut6fnEHt/6BIMpm
 4c/Pq3QHp/ThHVl+L9nHzg0WmgdbtyGY3seCRQYAtSVcPeIRD0eW
 -----END RSA PRIVATE KEY-----"#;
 
-    // Fixed timestamp for deterministic tests
-    const TEST_TIMESTAMP: i64 = 1706900000; // 2024-02-02T18:53:20Z
+    const TEST_TIMESTAMP: i64 = 1706900000;
 
     fn make_test_config() -> Config {
         Config {
@@ -277,11 +214,9 @@ pJz3IwKBgEbqya7GswZmYXsyXP1HZlMZk+emjUSjZukNTQkksut6fnEHt/6BIMpm
         let jwt = generate_app_jwt_with_timestamp(&config, TEST_TIMESTAMP)
             .expect("JWT generation should succeed");
 
-        // JWT should have 3 parts separated by dots
         let parts: Vec<&str> = jwt.split('.').collect();
         assert_eq!(parts.len(), 3, "JWT should have 3 parts");
 
-        // Each part should be non-empty
         assert!(!parts[0].is_empty(), "Header should not be empty");
         assert!(!parts[1].is_empty(), "Payload should not be empty");
         assert!(!parts[2].is_empty(), "Signature should not be empty");
@@ -319,15 +254,12 @@ pJz3IwKBgEbqya7GswZmYXsyXP1HZlMZk+emjUSjZukNTQkksut6fnEHt/6BIMpm
 
         assert_eq!(claims["iss"], "12345", "Issuer should be app ID");
 
-        // Check iat is TEST_TIMESTAMP - 60 (clock skew buffer)
         let iat = claims["iat"].as_i64().expect("iat should be a number");
         assert_eq!(iat, TEST_TIMESTAMP - 60, "iat should be timestamp minus 60");
 
-        // Check exp is TEST_TIMESTAMP + 600 (10 minute expiry)
         let exp = claims["exp"].as_i64().expect("exp should be a number");
         assert_eq!(exp, TEST_TIMESTAMP + 600, "exp should be timestamp plus 600");
 
-        // exp - iat should be 660 seconds
         assert_eq!(exp - iat, 660, "exp - iat should be 660 seconds");
     }
 
@@ -352,14 +284,12 @@ pJz3IwKBgEbqya7GswZmYXsyXP1HZlMZk+emjUSjZukNTQkksut6fnEHt/6BIMpm
         let jwt = generate_app_jwt_with_timestamp(&config, TEST_TIMESTAMP)
             .expect("JWT generation should succeed");
 
-        // For testing, we'll use insecure validation that skips signature verification
-        // and expiry validation (since we use a fixed past timestamp)
         let mut validation = Validation::new(Algorithm::RS256);
         validation.insecure_disable_signature_validation();
-        validation.validate_exp = false; // Disable exp validation since we use a past timestamp
+        validation.validate_exp = false;
         validation.set_required_spec_claims::<&str>(&[]);
 
-        let key = DecodingKey::from_secret(&[]); // Dummy key since we're not verifying
+        let key = DecodingKey::from_secret(&[]);
 
         let decoded = decode::<AppJwtClaims>(&jwt, &key, &validation)
             .expect("JWT should be decodable");
