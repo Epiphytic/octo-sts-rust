@@ -46,6 +46,22 @@ pub fn validate_identity(identity: &str) -> Result<()> {
     Ok(())
 }
 
+/// Parse scope into (owner, repo) pair.
+///
+/// Accepts both `owner/repo` format and org-only `owner` format.
+/// When only an org name is provided, defaults repo to `.github`
+/// (matching Go octo-sts behavior).
+pub fn parse_scope(scope: &str) -> Result<(String, String)> {
+    let parts: Vec<&str> = scope.split('/').collect();
+    match parts.len() {
+        1 => Ok((parts[0].to_string(), ".github".to_string())),
+        2 => Ok((parts[0].to_string(), parts[1].to_string())),
+        _ => Err(ApiError::invalid_request(
+            "scope must be in format 'owner' or 'owner/repo'",
+        )),
+    }
+}
+
 /// Load a trust policy for the given scope and identity
 ///
 /// Checks cache first, then fetches from GitHub if not cached.
@@ -60,12 +76,7 @@ pub async fn load(
     // Validate identity to prevent path traversal
     validate_identity(identity)?;
 
-    let parts: Vec<&str> = scope.split('/').collect();
-    if parts.len() != 2 {
-        return Err(ApiError::invalid_request("scope must be in format owner/repo"));
-    }
-    let owner = parts[0];
-    let repo = parts[1];
+    let (owner, repo) = parse_scope(scope)?;
 
     let cache_key = format!("policy:{}:{}", scope, identity);
 
@@ -80,7 +91,7 @@ pub async fn load(
 
     // Fetch from GitHub
     let path = format!(".github/chainguard/{}.sts.yaml", identity);
-    let yaml_content = github::api::get_file_content(owner, repo, &path, None, http, signer, clock).await?;
+    let yaml_content = github::api::get_file_content(&owner, &repo, &path, None, http, signer, clock).await?;
 
     // Parse and compile
     let is_org_policy = repo == ".github";
@@ -103,6 +114,33 @@ pub async fn load(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_scope_org_only() {
+        let (owner, repo) = parse_scope("badal-io").unwrap();
+        assert_eq!(owner, "badal-io");
+        assert_eq!(repo, ".github");
+    }
+
+    #[test]
+    fn test_parse_scope_owner_repo() {
+        let (owner, repo) = parse_scope("badal-io/.github").unwrap();
+        assert_eq!(owner, "badal-io");
+        assert_eq!(repo, ".github");
+    }
+
+    #[test]
+    fn test_parse_scope_specific_repo() {
+        let (owner, repo) = parse_scope("badal-io/my-repo").unwrap();
+        assert_eq!(owner, "badal-io");
+        assert_eq!(repo, "my-repo");
+    }
+
+    #[test]
+    fn test_parse_scope_too_many_parts() {
+        let result = parse_scope("a/b/c");
+        assert!(result.is_err());
+    }
 
     #[test]
     fn test_validate_identity_valid() {
