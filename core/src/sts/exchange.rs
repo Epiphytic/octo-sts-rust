@@ -12,8 +12,14 @@ use crate::platform::{cache_get, cache_put, Cache, Clock, Environment, HttpClien
 use crate::policy;
 
 /// Token exchange response
+///
+/// Includes both `token` (for Go octo-sts/action compatibility) and
+/// `access_token` (OAuth2 standard) with the same value.
 #[derive(Serialize)]
 pub struct ExchangeResponse {
+    /// Token field for compatibility with octo-sts/action (which reads `json.token`)
+    pub token: String,
+    /// Standard OAuth2 access_token field
     pub access_token: String,
     pub token_type: String,
     pub expires_in: u64,
@@ -88,6 +94,7 @@ pub async fn handle(
     let expires_in = calculate_expires_in(&expires_at, clock).unwrap_or(3600);
 
     Ok(ExchangeResponse {
+        token: token.clone(),
         access_token: token,
         token_type: "bearer".to_string(),
         expires_in,
