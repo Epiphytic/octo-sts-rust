@@ -42,7 +42,7 @@ struct GitHubOrg {
 /// PAT trust policy
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PatTrustPolicy {
-    /// Required org membership
+    /// Required organization membership or authenticated user-account login
     pub required_org: String,
 
     /// Permissions to grant
@@ -67,7 +67,7 @@ pub async fn handle(
     // 2. Load PAT trust policy
     let policy = load_pat_policy(&request.scope, &request.identity, cache, http, signer, clock).await?;
 
-    // 3. Check org membership
+    // 3. Check organization membership or authenticated account ownership
     check_org_membership(&request.bearer_token, &policy.required_org, &user.login, http).await?;
 
     // 4. Validate repository access
@@ -184,13 +184,20 @@ fn check_repository_access(policy: &PatTrustPolicy, requested_repo: &str) -> Res
     Ok(())
 }
 
-/// Check if user is a member of the required org
+/// Check organization membership or ownership, using the login validated by /user
 async fn check_org_membership(
     pat: &str,
     required_org: &str,
     username: &str,
     http: &dyn HttpClient,
 ) -> Result<()> {
+    // Only the authenticated /user login may establish ownership. Do this before
+    // /user/orgs: an owner PAT need not have organization-reading scopes.
+    // Collaborator access does not establish ownership or org membership.
+    if username.eq_ignore_ascii_case(required_org) {
+        return Ok(());
+    }
+
     let auth_header = format!("Bearer {}", pat);
     let headers = [
         ("Authorization", auth_header.as_str()),
@@ -219,16 +226,9 @@ async fn check_org_membership(
         .iter()
         .any(|org| org.login.eq_ignore_ascii_case(required_org));
 
-    // Owner federation: GitHub allows PATs from user accounts (not just orgs).
-    // When required_org names a USER account, membership via /user/orgs can never
-    // succeed. Accept when the PAT's own login IS the required account - the
-    // account owner is the strongest possible identity for that name. Collaborator
-    // relationships are intentionally NOT accepted here (weaker guarantee).
-    let is_owner = username.eq_ignore_ascii_case(required_org);
-
-    if !is_member && !is_owner {
+    if !is_member {
         return Err(ApiError::permission_denied(format!(
-            "user '{}' is not a member of org '{}'",
+            "user '{}' is neither the required account nor a member of org '{}'",
             username, required_org
         )));
     }
@@ -292,9 +292,10 @@ fn calculate_expires_in(expires_at: &str, clock: &dyn Clock) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::{check_org_membership, check_repository_access, PatTrustPolicy};
-    use std::collections::HashMap;
+    use crate::error::ApiError;
     use crate::platform::HttpResponse;
     use crate::test_support::MockHttp;
+    use std::collections::HashMap;
 
     #[tokio::test]
     async fn test_check_org_membership_org_member_ok() {
@@ -305,24 +306,20 @@ mod tests {
                 body: br#"[{"login":"Epiphytic"}]"#.to_vec(),
             },
         )]);
-        check_org_membership("pat", "Epiphytic", "someuser", &http)
+        check_org_membership("pat", "ePiPhYtIc", "someuser", &http)
             .await
             .expect("org member must pass");
     }
 
     #[tokio::test]
     async fn test_check_org_membership_owner_federation_ok() {
-        // User-account policies: the PAT login IS the required account.
-        let http = MockHttp::new(vec![(
-            "/user/orgs".to_string(),
-            HttpResponse {
-                status: 200,
-                body: br#"[{"login":"some-other-org"}]"#.to_vec(),
-            },
-        )]);
-        check_org_membership("pat", "liamhelmer", "liamhelmer", &http)
-            .await
-            .expect("account owner must pass for user-account required_org");
+        // No org endpoint is configured: ownership must not depend on that API.
+        let http = MockHttp::new(vec![]);
+        for required_org in ["liamhelmer", "LIAMHELMER", "LiamHelmer"] {
+            check_org_membership("pat", required_org, "liamhelmer", &http)
+                .await
+                .expect("authenticated owner must pass without org-reading scopes");
+        }
     }
 
     #[tokio::test]
@@ -335,7 +332,107 @@ mod tests {
             },
         )]);
         let result = check_org_membership("pat", "liamhelmer", "someone-else", &http).await;
-        assert!(result.is_err(), "non-member non-owner must be denied");
+        assert!(matches!(result, Err(ApiError::PermissionDenied { .. })));
+    }
+
+    #[tokio::test]
+    async fn test_owner_federation_rejects_near_matches() {
+        let http = MockHttp::new(vec![(
+            "/user/orgs".to_string(),
+            HttpResponse {
+                status: 200,
+                body: b"[]".to_vec(),
+            },
+        )]);
+        for required_org in [
+            "liamhelmer ",
+            " liamhelmer",
+            "liаmhelmer",
+            "liamhelmer-extra",
+            "",
+        ] {
+            let result = check_org_membership("pat", required_org, "liamhelmer", &http).await;
+            assert!(
+                matches!(result, Err(ApiError::PermissionDenied { .. })),
+                "{required_org:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_non_owner_org_errors_fail_closed() {
+        for (status, body) in [(403, "[]"), (500, "[]"), (200, "not json")] {
+            let http = MockHttp::new(vec![(
+                "/user/orgs".to_string(),
+                HttpResponse {
+                    status,
+                    body: body.as_bytes().to_vec(),
+                },
+            )]);
+            let result = check_org_membership("pat", "Epiphytic", "someone-else", &http).await;
+            assert!(matches!(result, Err(ApiError::UpstreamError { .. })));
+        }
+        let result =
+            check_org_membership("pat", "Epiphytic", "someone-else", &MockHttp::new(vec![])).await;
+        assert!(matches!(result, Err(ApiError::UpstreamError { .. })));
+    }
+
+    #[tokio::test]
+    async fn test_owner_exchange_still_validates_pat_and_repository() {
+        use super::{handle, PatExchangeRequest};
+        use crate::github::auth::PemJwtSigner;
+        use crate::platform::cache_put;
+        use crate::test_support::{MockCache, MockClock};
+
+        let cache = MockCache::new();
+        let policy = PatTrustPolicy {
+            required_org: "liamhelmer".to_string(),
+            permissions: HashMap::from([("contents".to_string(), "read".to_string())]),
+            repositories: vec!["allowed".to_string()],
+        };
+        cache_put(&cache, "pat-policy:liamhelmer/denied:test", &policy, 300)
+            .await
+            .unwrap();
+        // Signing must never be reached for any of these rejected requests.
+        let signer = PemJwtSigner {
+            app_id: "123".to_string(),
+            pem_key: String::new(),
+        };
+        for (status, body, expected_status) in [
+            (401, "{}", 400),
+            (403, "{}", 403),
+            (200, "{}", 502),
+            (200, r#"{"login":"liamhelmer","id":123}"#, 403),
+        ] {
+            let http = MockHttp::new(vec![(
+                "https://api.github.com/user".to_string(),
+                HttpResponse {
+                    status,
+                    body: body.as_bytes().to_vec(),
+                },
+            )]);
+            let result = handle(
+                PatExchangeRequest {
+                    scope: "liamhelmer/denied".to_string(),
+                    identity: "test".to_string(),
+                    bearer_token: "pat".to_string(),
+                },
+                &cache,
+                &http,
+                &MockClock(1706900000),
+                &signer,
+            )
+            .await;
+            let err = result
+                .err()
+                .expect("request must be rejected before token creation");
+            assert_eq!(err.status_code(), expected_status);
+            if status == 200 && body.contains("liamhelmer") {
+                assert!(err
+                    .to_string()
+                    .contains("repository 'denied' is not allowed"));
+            }
+        }
     }
 
     #[test]
@@ -351,7 +448,10 @@ repositories:
 "#;
         let policy: PatTrustPolicy = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(policy.required_org, "Epiphytic");
-        assert_eq!(policy.permissions.get("contents"), Some(&"write".to_string()));
+        assert_eq!(
+            policy.permissions.get("contents"),
+            Some(&"write".to_string())
+        );
         assert_eq!(policy.repositories.len(), 2);
     }
 
