@@ -114,22 +114,22 @@ jobs:
             exit 1
           fi
 
-      - name: "POSITIVE: Read gear contents"
+      - name: "POSITIVE: Read plugin-marketplace contents"
         env:
           STS_TOKEN: ${{ steps.sts.outputs.token }}
         run: |
-          echo "Testing: Read contents from gear (ALLOWED)"
+          echo "Testing: Read contents from plugin-marketplace (ALLOWED)"
           RESPONSE=$(curl -s -w "\n%{http_code}" \
             -H "Authorization: Bearer ${STS_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/Epiphytic/gear/contents/CLAUDE.md")
+            "https://api.github.com/repos/Epiphytic/plugin-marketplace/contents/CLAUDE.md")
 
           HTTP_CODE=$(echo "$RESPONSE" | tail -1)
           BODY=$(echo "$RESPONSE" | head -n -1)
 
           echo "HTTP Status: $HTTP_CODE"
           if [[ "$HTTP_CODE" == "200" ]]; then
-            echo "SUCCESS: Can read gear contents"
+            echo "SUCCESS: Can read plugin-marketplace contents"
           else
             echo "FAILED: Expected 200, got $HTTP_CODE"
             echo "Response: $BODY"
@@ -200,7 +200,7 @@ jobs:
           echo ""
           echo "POSITIVE TESTS (should succeed):"
           echo "  - Read octo-sts-rust contents"
-          echo "  - Read gear contents"
+          echo "  - Read plugin-marketplace contents"
           echo ""
           echo "NEGATIVE TESTS (should be denied):"
           echo "  - Read tillandsia contents"

@@ -113,6 +113,21 @@ repositories:
   - repo-b
 ```
 
+PAT policies are loaded from the target owner's `.github` repository. `required_org`
+accepts either an organization membership returned by GitHub's `/user/orgs` API,
+or the PAT's own authenticated login from `/user` (owner federation). For a user
+account, set `required_org: liamhelmer`, for example, to trust that account's PATs.
+The login comparison ignores ASCII case; whitespace and lookalike Unicode
+characters are not normalized. Repository collaborator access alone never qualifies.
+
+Owner federation does not require organization-reading scopes, but the token must
+still authenticate successfully with GitHub. The policy's repository restrictions
+and permissions still apply. This explicitly trusts the account identity: issued
+installation-token permissions are determined by the policy, not intersected with
+the input PAT's permissions. A login-based policy follows that name; review it if
+the account is renamed or deleted. OIDC exchanges remain governed by their
+`.sts.yaml` issuer, subject, audience, and claim rules.
+
 ### Matching rules
 
 - `issuer` or `issuer_pattern` (exactly one required)
@@ -158,6 +173,13 @@ wrangler secret put GITHUB_WEBHOOK_SECRET
 # Deploy
 wrangler deploy
 ```
+
+For production at `sts.epiphytic.org`, deploy the merged revision from
+`cloudflare/` with `wrangler deploy --env production`. Plain `wrangler deploy`
+targets the development worker. The production environment must already have
+`GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, and `GITHUB_WEBHOOK_SECRET` secrets
+(set with `wrangler secret put <NAME> --env production`), the configured
+`OCTO_STS_KV` binding, and domain routing. Merging alone does not deploy this change.
 
 ### Option 2: GCP Cloud Run
 

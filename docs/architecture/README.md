@@ -61,7 +61,7 @@ All async traits use `#[async_trait(?Send)]` for WASM compatibility (Cloudflare 
 **exchange_pat.rs** — PAT exchange:
 1. Validate the PAT against GitHub's `/user` API
 2. Load PAT trust policy from `.github/chainguard/{name}.pat.yaml`
-3. Check org membership using the PAT
+3. Accept the authenticated account login if it matches `required_org`; otherwise check org membership using the PAT
 4. Generate a scoped GitHub installation token
 
 **revoke.rs** — Proxies revocation requests to GitHub's API.
