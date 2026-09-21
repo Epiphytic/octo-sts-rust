@@ -1,0 +1,6 @@
+{
+  "command": "gh pr view 9 --repo Epiphytic/octo-sts-rust --json state,mergeable,headRefOid,statusCheckRollup",
+  "result": "unavailable",
+  "error": "error connecting to api.github.com",
+  "note": "No live snapshot captured."
+}

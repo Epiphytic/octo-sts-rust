@@ -1,0 +1,34 @@
+{
+  "commit": "97733fcd59952aa68490ba4767e72d07021f8c93",
+  "captured_at": "2026-09-21T18:25:48.161762+00:00",
+  "core_tests": "69 passed; 0 failed",
+  "wasm_check": "failed: crates.io DNS",
+  "wasm_check_offline": "failed: dependency unavailable locally",
+  "github_snapshot": "unavailable: API connection failed",
+  "artifacts": [
+    {
+      "path": "core-tests.log",
+      "sha256": "0c605b17517f86b641e22e06228ceb17c9d5507a1e14f44c36b81bc048a6eb16"
+    },
+    {
+      "path": "gcp-build-ci.json",
+      "sha256": "83ce0464f4dcf26a548ce117420ea08e653263fcd57ce0177be22e3a2b9f0648"
+    },
+    {
+      "path": "pr-snapshot.json",
+      "sha256": "4c2e3e3a7cf0259fdbeae19e7333c560d485d7b8e14238543fc205956b71e4f0"
+    },
+    {
+      "path": "token-exchange-ci.json",
+      "sha256": "9e30c8d91c5fb5716a01af34cfde421ee150b1a866ba221886eb18994f34c0bf"
+    },
+    {
+      "path": "wasm-check-offline.log",
+      "sha256": "ba5bb3381f373d49f7ef6ca298d744b5df5e6fef2eef1e8ced1edd696d7c5f7e"
+    },
+    {
+      "path": "wasm-check.log",
+      "sha256": "c78065fe1c022c7d4e6893d74d6a9652f26de0ff597136556db93dfd106b9078"
+    }
+  ]
+}

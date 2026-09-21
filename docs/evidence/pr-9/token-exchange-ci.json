@@ -1,0 +1,6 @@
+{
+  "command": "gh run view 35625775740 --repo Epiphytic/octo-sts-rust --json databaseId,headSha,status,conclusion,url,jobs",
+  "result": "unavailable",
+  "error": "error connecting to api.github.com",
+  "note": "No live snapshot captured."
+}

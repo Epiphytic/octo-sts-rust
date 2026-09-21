@@ -1,6 +1,9 @@
-# PR #9: PAT owner federation review
+# PR #9: PAT owner federation implementation notes
 
-Reviewed original head `aeab41c3fe996cccd0d6ac0eca1e04e166f5fac6` against
+These are implementation notes, not an independent completion review. The independent
+review is retained by the harness in its review job record.
+
+Examined original head `aeab41c3fe996cccd0d6ac0eca1e04e166f5fac6` against
 `ae40343f584b128c04345395499a6907601dfcc6`. No merge or deployment performed.
 
 ## Findings addressed
@@ -97,3 +100,11 @@ Do not log PATs or returned installation tokens during verification.
 
 - [PR #9](https://github.com/Epiphytic/octo-sts-rust/pull/9)
 - [GitHub org-list API: scope and fine-grained-token behavior](https://docs.github.com/en/rest/orgs/orgs#list-organizations-for-the-authenticated-user)
+
+## Retained completion evidence
+
+See [evidence manifest](../evidence/pr-9/manifest.json) for checksummed logs
+from commit `97733fcd59952aa68490ba4767e72d07021f8c93`. The core suite
+passed all 69 tests. The WASM retry failed on crates.io DNS; offline retry
+failed because dependencies were unavailable locally. Live GitHub snapshot
+requests also failed. These failures remain unresolved and are not passing evidence.
