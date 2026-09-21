@@ -219,7 +219,14 @@ async fn check_org_membership(
         .iter()
         .any(|org| org.login.eq_ignore_ascii_case(required_org));
 
-    if !is_member {
+    // Owner federation: GitHub allows PATs from user accounts (not just orgs).
+    // When required_org names a USER account, membership via /user/orgs can never
+    // succeed. Accept when the PAT's own login IS the required account - the
+    // account owner is the strongest possible identity for that name. Collaborator
+    // relationships are intentionally NOT accepted here (weaker guarantee).
+    let is_owner = username.eq_ignore_ascii_case(required_org);
+
+    if !is_member && !is_owner {
         return Err(ApiError::permission_denied(format!(
             "user '{}' is not a member of org '{}'",
             username, required_org
