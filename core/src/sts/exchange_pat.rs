@@ -291,7 +291,52 @@ fn calculate_expires_in(expires_at: &str, clock: &dyn Clock) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{check_org_membership, check_repository_access, PatTrustPolicy};
+    use std::collections::HashMap;
+    use crate::platform::HttpResponse;
+    use crate::test_support::MockHttp;
+
+    #[tokio::test]
+    async fn test_check_org_membership_org_member_ok() {
+        let http = MockHttp::new(vec![(
+            "/user/orgs".to_string(),
+            HttpResponse {
+                status: 200,
+                body: br#"[{"login":"Epiphytic"}]"#.to_vec(),
+            },
+        )]);
+        check_org_membership("pat", "Epiphytic", "someuser", &http)
+            .await
+            .expect("org member must pass");
+    }
+
+    #[tokio::test]
+    async fn test_check_org_membership_owner_federation_ok() {
+        // User-account policies: the PAT login IS the required account.
+        let http = MockHttp::new(vec![(
+            "/user/orgs".to_string(),
+            HttpResponse {
+                status: 200,
+                body: br#"[{"login":"some-other-org"}]"#.to_vec(),
+            },
+        )]);
+        check_org_membership("pat", "liamhelmer", "liamhelmer", &http)
+            .await
+            .expect("account owner must pass for user-account required_org");
+    }
+
+    #[tokio::test]
+    async fn test_check_org_membership_denies_non_member() {
+        let http = MockHttp::new(vec![(
+            "/user/orgs".to_string(),
+            HttpResponse {
+                status: 200,
+                body: br#"[{"login":"some-other-org"}]"#.to_vec(),
+            },
+        )]);
+        let result = check_org_membership("pat", "liamhelmer", "someone-else", &http).await;
+        assert!(result.is_err(), "non-member non-owner must be denied");
+    }
 
     #[test]
     fn test_pat_policy_deserialization() {
