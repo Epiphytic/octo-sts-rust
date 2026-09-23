@@ -10,6 +10,9 @@ command = "cargo install -q --locked worker-build@0.7.5 && worker-build --releas
 # Development environment (default)
 # =============================================================================
 [vars]
+NOSTR_EXCHANGE_ENABLED = "false"
+NOSTR_EXCHANGE_URL = "https://octo-sts.liam-helmer-428.workers.dev/sts/exchange/nostr"
+NOSTR_RATE_PER_MINUTE = "10"
 DOMAIN = "https://octo-sts.liam-helmer-428.workers.dev"
 
 [[kv_namespaces]]
@@ -24,6 +27,9 @@ name = "octo-sts-production"
 workers_dev = true           # Enable workers.dev URL as fallback
 
 [env.production.vars]
+NOSTR_EXCHANGE_ENABLED = "false"
+NOSTR_EXCHANGE_URL = "https://sts.epiphytic.org/sts/exchange/nostr"
+NOSTR_RATE_PER_MINUTE = "10"
 DOMAIN = "https://sts.epiphytic.org"
 
 [[env.production.kv_namespaces]]
@@ -39,3 +45,15 @@ zone_name = "epiphytic.org"
 # - GITHUB_APP_ID
 # - GITHUB_APP_PRIVATE_KEY
 # - GITHUB_WEBHOOK_SECRET
+
+[[durable_objects.bindings]]
+name = "NOSTR_REPLAY"
+class_name = "NostrReplay"
+
+[[env.production.durable_objects.bindings]]
+name = "NOSTR_REPLAY"
+class_name = "NostrReplay"
+
+[[migrations]]
+tag = "nostr-replay-v1"
+new_sqlite_classes = ["NostrReplay"]

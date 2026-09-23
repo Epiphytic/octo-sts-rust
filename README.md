@@ -276,3 +276,9 @@ Apache-2.0 (same as original octo-sts)
 ## Acknowledgments
 
 This project is a port of [octo-sts/app](https://github.com/octo-sts/app) by Chainguard, Inc.
+
+### Nostr identities
+
+The optional [Nostr exchange](docs/nostr.md) authenticates signed NIP-98 events
+and explicit npub policies. It is disabled by default and requires a durable
+replay store, canonical audience and operator-approved public keys/grants.

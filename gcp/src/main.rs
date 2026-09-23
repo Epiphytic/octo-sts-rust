@@ -16,6 +16,7 @@ use octo_sts_core::platform::JwtSigner;
 use octo_sts_core::sts;
 
 mod kms;
+mod nostr;
 mod platform;
 
 use kms::KmsJwtSigner;
@@ -109,6 +110,7 @@ async fn route_request(req: Request<Incoming>, state: &AppState) -> HyperRespons
         (Method::GET, "/") => handle_health(),
         (Method::GET | Method::POST, "/sts/exchange") => handle_exchange(req, state).await,
         (Method::GET | Method::POST, "/sts/exchange/pat") => handle_exchange_pat(req, state).await,
+        (Method::POST, "/sts/exchange/nostr") => nostr::handle(req, state).await,
         (Method::POST, "/sts/revoke") => handle_revoke(req, state).await,
         (Method::POST, "/webhook") => handle_webhook(req, state).await,
         _ => json_response(StatusCode::NOT_FOUND, &serde_json::json!({"error": "not_found"})),

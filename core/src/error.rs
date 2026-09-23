@@ -36,6 +36,15 @@ pub enum ApiError {
     #[error("upstream error: {message}")]
     UpstreamError { message: String },
 
+    #[error("request too large")]
+    PayloadTooLarge,
+
+    #[error("service unavailable")]
+    ServiceUnavailable,
+
+    #[error("rate limited")]
+    RateLimited,
+
     #[error("upstream timeout")]
     UpstreamTimeout,
 }
@@ -101,6 +110,9 @@ impl ApiError {
             Self::Internal { .. } => 500,
             Self::UpstreamError { .. } => 502,
             Self::UpstreamTimeout => 504,
+            Self::PayloadTooLarge => 413,
+            Self::ServiceUnavailable => 503,
+            Self::RateLimited => 429,
         }
     }
 
@@ -116,6 +128,9 @@ impl ApiError {
             Self::Internal { .. } => "internal_error",
             Self::UpstreamError { .. } => "upstream_error",
             Self::UpstreamTimeout => "upstream_timeout",
+            Self::PayloadTooLarge => "payload_too_large",
+            Self::ServiceUnavailable => "service_unavailable",
+            Self::RateLimited => "rate_limited",
         }
     }
 }
