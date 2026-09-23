@@ -4,7 +4,7 @@ FROM rust:slim AS builder
 WORKDIR /app
 
 # Copy workspace files
-COPY Cargo.toml ./
+COPY Cargo.toml Cargo.lock ./
 COPY core/ core/
 COPY gcp/ gcp/
 # Need cloudflare/ listed in workspace members but don't need to compile it
@@ -12,7 +12,7 @@ COPY cloudflare/Cargo.toml cloudflare/Cargo.toml
 RUN mkdir -p cloudflare/src && echo "// stub" > cloudflare/src/lib.rs
 
 # Build only the GCP binary
-RUN cargo build -p octo-sts-gcp --release
+RUN cargo build -p octo-sts-gcp --release --locked
 
 # Runtime stage
 FROM debian:bookworm-slim

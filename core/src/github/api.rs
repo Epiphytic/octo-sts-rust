@@ -69,6 +69,7 @@ pub async fn get_file_content(
 }
 
 /// Create a check run for policy validation
+#[allow(clippy::too_many_arguments)] // GitHub check fields plus injected platform services.
 pub async fn create_check_run(
     owner: &str,
     repo: &str,

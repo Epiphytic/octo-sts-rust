@@ -129,7 +129,7 @@ pub async fn validate_token(token: &str, http: &dyn HttpClient, clock: &dyn Cloc
         .map_err(|e| ApiError::token_verification_failed(format!("token verification failed: {}", e)))?;
 
     // Manually validate time-based claims using platform clock
-    let now_secs = clock.now_secs() as u64;
+    let now_secs = clock.now_secs();
 
     // Validate expiration (exp)
     if token_data.claims.exp <= now_secs {
