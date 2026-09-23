@@ -165,7 +165,7 @@ async fn handle_check_suite_event(body: &str) -> Result<()> {
 }
 
 fn is_policy_file(path: &str) -> bool {
-    path.starts_with(POLICY_PATH_PREFIX) && path.ends_with(POLICY_PATH_SUFFIX)
+    path.starts_with(POLICY_PATH_PREFIX) && (path.ends_with(POLICY_PATH_SUFFIX) || path.ends_with(".nostr.yaml"))
 }
 
 async fn validate_policy_files(
@@ -208,6 +208,11 @@ async fn validate_single_policy(
 ) -> Result<()> {
     let content = api::get_file_content(owner, repo, path, Some(git_ref), http, signer, clock).await?;
 
+    if path.ends_with(".nostr.yaml") {
+        if repo != ".github" { return Err(ApiError::invalid_request("Nostr policies belong in the owner .github repository")); }
+        return crate::nostr::Policy::parse(&content).map(|_| ());
+    }
+
     let is_org_policy = repo == ".github";
 
     if is_org_policy {
@@ -221,4 +226,15 @@ async fn validate_single_policy(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod nostr_policy_tests {
+    #[test]
+    fn recognizes_only_policy_paths() {
+        assert!(super::is_policy_file(".github/chainguard/agent.nostr.yaml"));
+        assert!(super::is_policy_file(".github/chainguard/agent.sts.yaml"));
+        assert!(!super::is_policy_file("other/agent.nostr.yaml"));
+        assert!(!super::is_policy_file(".github/chainguard/agent.nostr.yaml.bak"));
+    }
 }

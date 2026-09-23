@@ -7,6 +7,8 @@ use octo_sts_core::github::auth::PemJwtSigner;
 use octo_sts_core::sts;
 
 mod platform;
+mod nostr;
+pub use nostr::NostrReplay;
 
 use platform::{JsClock, WorkersEnv, WorkersFetchClient, WorkersKvCache};
 
@@ -18,6 +20,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .get("/", |_, _| handle_health())
         .post_async("/sts/exchange", handle_exchange)
         .post_async("/sts/exchange/pat", handle_exchange_pat)
+        .post_async("/sts/exchange/nostr", nostr::handle)
         .post_async("/sts/revoke", handle_revoke)
         .post_async("/webhook", handle_webhook)
         .run(req, env)

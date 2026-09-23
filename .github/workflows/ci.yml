@@ -27,3 +27,8 @@ jobs:
       - name: Build Workers bundle without deploying
         working-directory: cloudflare
         run: npx --yes wrangler@4.136.3 deploy --env="" --dry-run --outdir /tmp/worker-bundle
+
+      - name: Verify Nostr exchange in Workers runtime
+        run: |
+          npm install --prefix /tmp/nostr-runtime --no-audit --no-fund miniflare@4.20260730.0
+          NODE_PATH=/tmp/nostr-runtime/node_modules node cloudflare/tests/nostr.cjs

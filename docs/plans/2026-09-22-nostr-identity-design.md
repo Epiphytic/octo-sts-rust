@@ -1,6 +1,7 @@
 # Nostr identity exchange (btq-u5p)
 
-Status: proposed; operator design approval required before implementation.
+Status: approved by Liam on 2026-09-23 ([approval](https://github.com/Epiphytic/octo-sts-rust/pull/12#issuecomment-5790056142)).
+Implementation and rollout instructions: [Nostr exchange](../nostr.md).
 
 ## Decision
 
@@ -16,8 +17,8 @@ canonical event-ID verification, and Schnorr verification. Do not add the full
 `Cache`. Cloudflare uses Durable Objects; GCP uses Firestore. Deployments with
 independent stores must have distinct, configured public audiences.
 
-These are proposed product and security decisions, not evidence of a working
-implementation. The hermes-agent public key and desired grants must be supplied
+These are approved product and security decisions. Runtime verification is
+recorded with the implementation delivery evidence. The hermes-agent public key and desired grants must be supplied
 and reviewed by the operator before onboarding.
 
 ## Existing seams and compatibility
@@ -287,3 +288,12 @@ Cloudflare and GCP will use distinct audiences or require shared replay state.
 Supply the hermes-agent **public** npub through the normal trusted operator
 channel and specify its initial owner/repository/permission grants. No actual
 identity grant is embedded here. Implementation remains gated on that review.
+
+## Implementation choices
+
+The protocol verifier pins `nostr` 0.45.5 with only `alloc`, alongside
+`secp256k1` 0.30 with `alloc`; no relay/client stack or random signing backend
+is enabled in the service. Earlier 0.44 releases considered during the design
+were yanked. The repository-permission subset and fixed-minute issuance limit
+are documented in the operational guide. Internal `.github` policy-read tokens
+precede replay consumption; the caller-scoped token is issued only afterward.
