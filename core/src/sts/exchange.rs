@@ -5,7 +5,7 @@
 use serde::Serialize;
 
 use crate::config::{Config, INSTALL_CACHE_TTL_SECS};
-use crate::error::{ApiError, Result};
+use crate::error::Result;
 use crate::github;
 use crate::oidc;
 use crate::platform::{cache_get, cache_put, Cache, Clock, Environment, HttpClient, JwtSigner};

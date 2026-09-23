@@ -1,0 +1,29 @@
+name: Rust and Workers checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install Rust components
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy --target wasm32-unknown-unknown
+          rustup default stable
+      - name: Test workspace
+        run: cargo test --workspace --locked
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Check Workers target
+        run: cargo check -p octo-sts-cloudflare --target wasm32-unknown-unknown --locked
+      - name: Build Workers bundle without deploying
+        working-directory: cloudflare
+        run: npx --yes wrangler@4.136.3 deploy --env="" --dry-run --outdir /tmp/worker-bundle

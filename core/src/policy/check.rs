@@ -89,11 +89,7 @@ fn check_subject(claims: &OidcClaims, policy: &CompiledPolicy) -> Result<()> {
 }
 
 fn check_audience(claims: &OidcClaims, policy: &CompiledPolicy, domain: &str) -> Result<()> {
-    let expected_audience = policy
-        .audience
-        .as_ref()
-        .map(|s| s.as_str())
-        .unwrap_or(domain);
+    let expected_audience = policy.audience.as_deref().unwrap_or(domain);
 
     let audiences = &claims.aud;
 
@@ -101,13 +97,11 @@ fn check_audience(claims: &OidcClaims, policy: &CompiledPolicy, domain: &str) ->
         if !audiences.iter().any(|a| regex.is_match(a)) {
             return Err(ApiError::permission_denied("no audience matches pattern"));
         }
-    } else {
-        if !audiences.iter().any(|a| a == expected_audience) {
-            return Err(ApiError::permission_denied(format!(
-                "audience mismatch: expected '{}', got {:?}",
-                expected_audience, audiences
-            )));
-        }
+    } else if !audiences.iter().any(|a| a == expected_audience) {
+        return Err(ApiError::permission_denied(format!(
+            "audience mismatch: expected '{}', got {:?}",
+            expected_audience, audiences
+        )));
     }
 
     Ok(())
