@@ -270,3 +270,16 @@ async fn exchange_scopes_token_and_burns_nonce_even_after_upstream_failure() {
         .iter()
         .all(|r| r["repositories"] == json!([".github"])));
 }
+
+#[test]
+fn policy_rejects_valid_non_npub_encodings() {
+    // Valid checksums: nsec test key, NIP-19 profile TLV, and the same
+    // authorized public key encoded using Bech32m instead of Bech32.
+    for encoded in [
+        "nsec1qurswpc8qurswpc8qurswpc8qurswpc8qurswpc8qurswpc8qursl6edet",
+        "nprofile1qqsf38qtwm94vwt3lhymauc7cpkr2c8nyjwka609mq79wcj4jms97mcv0c4mt",
+        "npub1nzwqkakt2cuhrlwfhme3asrvx4s0xfyadm57tkpu2a39t9hqtahst4qlz8",
+    ] {
+        assert!(Policy::parse(&yaml().replace(&npub(), encoded)).is_err());
+    }
+}
