@@ -8,7 +8,7 @@ use hyper::body::{Bytes, Incoming};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
-use std::sync::Arc;
+use std::rc::Rc;
 
 use octo_sts_core::error::{ApiError, ErrorResponse};
 use octo_sts_core::github::auth::PemJwtSigner;
@@ -60,7 +60,7 @@ async fn main() {
         })
     };
 
-    let state = Arc::new(AppState {
+    let state = Rc::new(AppState {
         cache: MokaCache::new(),
         http: ReqwestHttpClient::new(),
         clock: SystemClock,

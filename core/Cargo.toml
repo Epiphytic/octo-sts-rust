@@ -8,29 +8,29 @@ license = "Apache-2.0"
 
 [dependencies]
 # Serialization
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-serde_yaml = "0.9"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+serde_yaml = "0.9.34"
 
 # JWT handling - using WASM-compatible fork
 surrealdb-jsonwebtoken = "8.3.0-surreal.1"
 
 # Utilities
-regex = "1"
-thiserror = "1"
-base64 = "0.22"
-url = "2"
-hex = "0.4"
-chrono = "0.4"
+regex = "1.13.1"
+thiserror = "1.0.69"
+base64 = "0.22.1"
+url = "2.5.8"
+hex = "0.4.3"
+chrono = "0.4.45"
 
 # Crypto (for webhook signature verification)
-hmac = "0.12"
-sha2 = "0.10"
+hmac = "0.12.1"
+sha2 = "0.10.9"
 
 # Async
-async-trait = "0.1"
+async-trait = "0.1.92"
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt", "macros"] }
-rsa = "0.9"
-rand = "0.8"
+tokio = { version = "1.53.1", features = ["rt", "macros"] }
+rsa = "0.9.10"
+rand = "0.8.8"

@@ -14,30 +14,30 @@ path = "src/main.rs"
 octo-sts-core = { path = "../core" }
 
 # HTTP server (lightweight)
-hyper = { version = "1", features = ["http1", "server"] }
-hyper-util = { version = "0.1", features = ["tokio", "http1"] }
-http-body-util = "0.1"
-tokio = { version = "1", features = ["rt", "macros", "net"] }
+hyper = { version = "1.11.1", features = ["http1", "server"] }
+hyper-util = { version = "0.1.20", features = ["tokio", "http1"] }
+http-body-util = "0.1.5"
+tokio = { version = "1.53.1", features = ["rt", "macros", "net"] }
 
 # HTTP client
-reqwest = { version = "0.12", default-features = false, features = [
+reqwest = { version = "0.12.28", default-features = false, features = [
   "rustls-tls",
   "json",
 ] }
 
 # Serialization
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 
 # Async
-async-trait = "0.1"
+async-trait = "0.1.92"
 
 # In-memory cache with TTL
-moka = { version = "0.12", features = ["future"] }
+moka = { version = "0.12.16", features = ["future"] }
 
 # URL parsing
-url = "2"
+url = "2.5.8"
 
 # KMS signing support
-base64 = "0.22"
-sha2 = "0.10"
+base64 = "0.22.1"
+sha2 = "0.10.9"

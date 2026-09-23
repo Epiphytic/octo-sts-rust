@@ -12,6 +12,12 @@ pub struct MockCache {
     store: Mutex<HashMap<String, Vec<u8>>>,
 }
 
+impl Default for MockCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MockCache {
     pub fn new() -> Self {
         Self {

@@ -105,6 +105,7 @@ struct Commit {
 
 #[derive(Deserialize)]
 struct PullRequest {
+    #[allow(dead_code)] // Retain validation of the webhook payload shape.
     head: PullRequestHead,
 }
 

@@ -13,8 +13,10 @@ pub struct DiscoveryDocument {
     pub issuer: String,
     pub jwks_uri: String,
     #[serde(default)]
+    #[allow(dead_code)] // Parsed discovery metadata; STS only consumes jwks_uri.
     pub token_endpoint: Option<String>,
     #[serde(default)]
+    #[allow(dead_code)] // Parsed discovery metadata; STS only consumes jwks_uri.
     pub authorization_endpoint: Option<String>,
 }
 
